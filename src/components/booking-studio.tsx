@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { bookAppointment, cancelAppointment, type ActionResult } from "@/app/actions";
 import { Card, Chip, Empty, SectionHead, Table, Td, Th } from "@/components/ui";
+import { useKeptForm } from "@/components/care-ui";
 import type { DoctorRow, QueueRow, SlotRow, Student } from "@/lib/queries";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -40,6 +41,7 @@ export function BookingStudio({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
+  const { attach, onSubmit, onInput } = useKeptForm(result, submit);
 
   const [regNo, setRegNo] = useState(students[0]?.reg_no ?? "");
   const [doctorId, setDoctorId] = useState<number | null>(null);
@@ -92,7 +94,7 @@ export function BookingStudio({
     <div className="grid gap-5 xl:grid-cols-[1fr_400px]">
       {/* ------------------------------------------------------- booking */}
       <div className="min-w-0 space-y-5">
-        <form action={submit}>
+        <form ref={attach} onSubmit={onSubmit} onInput={onInput}>
           <input type="hidden" name="reg_no" value={regNo} />
           <input type="hidden" name="doctor_id" value={doctorId ?? ""} />
           <input type="hidden" name="slot" value={slot} />

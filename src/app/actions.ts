@@ -9,6 +9,8 @@ export type ActionResult = {
   /** DB-level detail worth surfacing: which trigger fired, what it did */
   detail?: string[];
   sql?: string;
+  /** The form field (input name) the failure is about, so the form can mark it. */
+  field?: string;
 };
 
 /** Everything a trigger wrote while `fn` ran. */

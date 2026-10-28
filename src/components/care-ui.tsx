@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Zap } from "lucide-react";
 import type { ActionResult } from "@/app/actions";
 import { SqlBlock } from "@/components/ui";
@@ -77,6 +77,44 @@ export function Segmented({
       })}
     </div>
   );
+}
+
+/* -------------------------------------------------------------------- forms */
+
+/**
+ * Wires a form so a failed submit never costs the user what they typed.
+ *
+ * React clears a <form action={fn}> after every submission, valid or not, so
+ * these forms submit through onSubmit instead and keep their values. When the
+ * server names the field it rejected (ActionResult.field), that input is
+ * outlined in red and focused; typing into it clears the mark.
+ */
+export function useKeptForm(result: ActionResult | null, submit: (data: FormData) => void) {
+  // A callback ref kept in state, so the effect re-runs once the form mounts.
+  const [form, setForm] = useState<HTMLFormElement | null>(null);
+
+  useEffect(() => {
+    if (!form) return;
+    form.querySelectorAll("[aria-invalid]").forEach((el) => el.removeAttribute("aria-invalid"));
+    if (!result || result.ok || !result.field) return;
+    const input = form.querySelector<HTMLElement>(`[name="${result.field}"]`);
+    if (!input) return;
+    input.setAttribute("aria-invalid", "true");
+    input.focus({ preventScroll: true });
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [result, form]);
+
+  return {
+    form,
+    attach: setForm,
+    onSubmit(event: FormEvent<HTMLFormElement>) {
+      event.preventDefault();
+      submit(new FormData(event.currentTarget));
+    },
+    onInput(event: FormEvent<HTMLFormElement>) {
+      (event.target as HTMLElement).removeAttribute?.("aria-invalid");
+    },
+  };
 }
 
 /* ----------------------------------------------------------------- feedback */
