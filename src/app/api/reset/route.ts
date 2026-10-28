@@ -4,9 +4,11 @@ import { revalidatePath } from "next/cache";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+/** POST /api/reset            -> reference data only
+ *  POST /api/reset?sample=1   -> reference data plus the sample people */
+export async function POST(request: Request) {
   try {
-    resetDatabase();
+    resetDatabase(new URL(request.url).searchParams.get("sample") === "1");
     revalidatePath("/", "layout");
     return NextResponse.json({ ok: true });
   } catch (error) {

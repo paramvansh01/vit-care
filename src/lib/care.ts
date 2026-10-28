@@ -1,4 +1,4 @@
-import { all, one, scalar } from "@/lib/db";
+import { all, one, run, scalar } from "@/lib/db";
 
 /* =========================================================== student profile */
 
@@ -438,12 +438,156 @@ export function doctorStats(doctorId: number) {
   };
 }
 
-/** Open slots for a doctor, plus a rolling set of fresh ones if the seed ran dry. */
+/**
+ * Publishes a rolling week of slots for a doctor. Runs on registration and
+ * whenever a student looks at a doctor's calendar, so it never runs dry.
+ */
+export function topUpSlots(doctorId: number) {
+  return Number(
+    run(
+      `WITH RECURSIVE days(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM days WHERE n < 6),
+       times(t, mode) AS (
+         SELECT '09:00','VIDEO' UNION ALL SELECT '09:30','VIDEO' UNION ALL
+         SELECT '10:00','VIDEO' UNION ALL SELECT '10:30','IN_PERSON' UNION ALL
+         SELECT '11:00','VIDEO' UNION ALL SELECT '11:30','VIDEO' UNION ALL
+         SELECT '14:00','VIDEO' UNION ALL SELECT '14:30','VIDEO' UNION ALL
+         SELECT '15:00','VIDEO' UNION ALL SELECT '15:30','IN_PERSON' UNION ALL
+         SELECT '16:00','VIDEO' UNION ALL SELECT '16:30','VIDEO' UNION ALL
+         SELECT '17:00','VIDEO' UNION ALL SELECT '18:00','VIDEO' UNION ALL
+         SELECT '19:00','VIDEO' UNION ALL SELECT '20:00','VIDEO' UNION ALL
+         SELECT '21:00','VIDEO'
+       )
+       INSERT OR IGNORE INTO slot (doctor_id, slot_date, slot_time, mode, status)
+       SELECT ?, date('now', 'localtime', '+' || days.n || ' day'), times.t, times.mode, 'OPEN'
+         FROM days, times`,
+      doctorId,
+    ).changes,
+  );
+}
+
+/** A doctor's open slots from now on — never one that has already passed. */
 export function bookableSlots(doctorId: number) {
+  topUpSlots(doctorId);
   return all<{ slot_date: string; slot_time: string; mode: string }>(
     `SELECT slot_date, slot_time, mode FROM slot
       WHERE doctor_id = ? AND status = 'OPEN'
+        AND slot_date || ' ' || slot_time > strftime('%Y-%m-%d %H:%M', 'now', 'localtime')
       ORDER BY slot_date, slot_time`,
     doctorId,
+  );
+}
+
+/* ================================================================ attendance */
+
+export type Enrollment = {
+  enrollment_id: number;
+  course_code: string;
+  course_title: string;
+  credits: number;
+  faculty_name: string;
+  semester: string;
+  classes_held: number;
+  classes_attended: number;
+  condoned_days: number;
+  attendance_pct: number | null;
+};
+
+export function enrollmentsFor(regNo: string) {
+  return all<Enrollment>(
+    `SELECT e.enrollment_id, e.course_code, c.title AS course_title, c.credits,
+            f.name AS faculty_name, e.semester, e.classes_held, e.classes_attended, e.condoned_days,
+            ROUND(100.0 * e.classes_attended / NULLIF(e.classes_held, 0), 1) AS attendance_pct
+       FROM enrollment e
+       JOIN course  c ON c.course_code = e.course_code
+       JOIN faculty f ON f.faculty_id = e.faculty_id
+      WHERE e.reg_no = ?
+      ORDER BY e.semester DESC, e.course_code`,
+    regNo,
+  );
+}
+
+/* ================================================================= directory */
+
+export type Person = {
+  user_id: number;
+  display_name: string;
+  role: string;
+  username: string;
+  linked_ref: string | null;
+  detail: string | null;
+  campus_name: string | null;
+  online: number;
+  last_seen: string | null;
+};
+
+/** Everyone with an account, with whether any of their browsers polled recently. */
+export function directory() {
+  return all<Person>(
+    `SELECT u.user_id, u.display_name, r.role_name AS role, u.username, u.linked_ref,
+            CASE r.role_name
+              WHEN 'DOCTOR'  THEN (SELECT CASE d.doctor_type WHEN 'GP' THEN 'General practitioner'
+                                                             WHEN 'SPECIALIST' THEN 'Specialist'
+                                                             ELSE 'Counsellor' END
+                                     FROM doctor d WHERE d.doctor_id = CAST(u.linked_ref AS INTEGER))
+              WHEN 'STUDENT' THEN (SELECT 'Student · ' || s.reg_no || ' · Year ' || s.year_of_study
+                                     FROM student s WHERE s.reg_no = u.linked_ref)
+            END AS detail,
+            CASE r.role_name
+              WHEN 'DOCTOR'  THEN (SELECT c.name FROM doctor d JOIN campus c ON c.campus_id = d.campus_id
+                                    WHERE d.doctor_id = CAST(u.linked_ref AS INTEGER))
+              WHEN 'STUDENT' THEN (SELECT c.name FROM student s JOIN campus c ON c.campus_id = s.campus_id
+                                    WHERE s.reg_no = u.linked_ref)
+            END AS campus_name,
+            EXISTS (SELECT 1 FROM app_session ss WHERE ss.user_id = u.user_id
+                       AND ss.last_seen_at > datetime('now', '-20 second')) AS online,
+            (SELECT MAX(ss.last_seen_at) FROM app_session ss WHERE ss.user_id = u.user_id) AS last_seen
+       FROM app_user u JOIN app_role r ON r.role_id = u.role_id
+      WHERE r.role_name IN ('DOCTOR', 'STUDENT') AND u.password_hash IS NOT NULL
+      ORDER BY online DESC, r.role_name, u.display_name`,
+  );
+}
+
+export type DoctorCard = {
+  doctor_id: number;
+  name: string;
+  email: string;
+  doctor_type: string;
+  campus_id: number;
+  campus_name: string;
+  reg_council_no: string;
+  years_experience: number;
+  consult_fee: number;
+  specialisations: string | null;
+  user_id: number | null;
+  online: number;
+  open_slots: number;
+  seen: number;
+};
+
+export function doctorCards() {
+  return all<DoctorCard>(
+    `SELECT d.doctor_id, d.name, d.email, d.doctor_type, d.campus_id, c.name AS campus_name,
+            d.reg_council_no, d.years_experience, d.consult_fee,
+            (SELECT GROUP_CONCAT(sp.name, ', ')
+               FROM doctor_specialization ds JOIN specialization sp ON sp.spec_id = ds.spec_id
+              WHERE ds.doctor_id = d.doctor_id) AS specialisations,
+            u.user_id,
+            COALESCE(EXISTS (SELECT 1 FROM app_session ss WHERE ss.user_id = u.user_id
+                               AND ss.last_seen_at > datetime('now', '-20 second')), 0) AS online,
+            (SELECT COUNT(*) FROM slot s WHERE s.doctor_id = d.doctor_id AND s.status = 'OPEN'
+                AND s.slot_date >= date('now', 'localtime')) AS open_slots,
+            (SELECT COUNT(*) FROM appointment a WHERE a.doctor_id = d.doctor_id
+                AND a.status = 'COMPLETED') AS seen
+       FROM doctor d
+       JOIN campus c ON c.campus_id = d.campus_id
+       LEFT JOIN app_user u ON u.linked_ref = CAST(d.doctor_id AS TEXT)
+                           AND u.role_id = (SELECT role_id FROM app_role WHERE role_name = 'DOCTOR')
+      ORDER BY online DESC, d.name`,
+  );
+}
+
+export function specialisations() {
+  return all<{ spec_id: number; name: string; body_system: string }>(
+    "SELECT spec_id, name, body_system FROM specialization ORDER BY name",
   );
 }

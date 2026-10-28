@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { all, db, one, run, scalar } from "@/lib/db";
 import type { ActionResult } from "@/app/actions";
+import { currentUser, startSession } from "@/lib/auth";
+import { hashPassword } from "@/lib/password";
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -48,6 +50,40 @@ function refreshAll() {
 
 const str = (form: FormData, key: string) => String(form.get(key) ?? "").trim();
 
+/* ------------------------------------------------------------ authorisation */
+
+const DENIED: ActionResult = { ok: false, message: "Your session cannot do that — sign in as the right person." };
+
+/** null when the signed-in user is this student; the refusal otherwise. */
+async function guardStudent(regNo: string) {
+  const me = await currentUser();
+  return me?.role === "STUDENT" && me.linked_ref === regNo ? null : DENIED;
+}
+
+/** null when the signed-in user is the doctor holding this appointment. */
+async function guardDoctor(appointmentId: number | undefined) {
+  const me = await currentUser();
+  if (me?.role !== "DOCTOR" || !appointmentId) return DENIED;
+  const owns = one(
+    "SELECT 1 FROM appointment WHERE appointment_id = ? AND doctor_id = ?",
+    appointmentId,
+    Number(me.linked_ref),
+  );
+  return owns ? null : DENIED;
+}
+
+function appointmentOf(consultationId: number) {
+  return one<{ appointment_id: number }>(
+    "SELECT appointment_id FROM consultation WHERE consultation_id = ?",
+    consultationId,
+  )?.appointment_id;
+}
+
+async function guardCartLine(cartItemId: number) {
+  const line = one<{ reg_no: string }>("SELECT reg_no FROM cart_item WHERE cart_item_id = ?", cartItemId);
+  return line ? guardStudent(line.reg_no) : DENIED;
+}
+
 /* ======================================================== 1. student profile */
 
 /**
@@ -57,6 +93,121 @@ const str = (form: FormData, key: string) => String(form.get(key) ?? "").trim();
  * inside the chosen campus rather than silently dropped.
  */
 export async function saveProfile(form: FormData): Promise<ActionResult> {
+  const me = await currentUser();
+  const regNo = str(form, "reg_no").toUpperCase();
+  if (!me || me.role !== "STUDENT" || me.linked_ref !== regNo) {
+    return { ok: false, message: "You can only edit your own profile — sign in as that student first." };
+  }
+  return writeStudent(form, "update");
+}
+
+/**
+ * Creates a student account: the student row (with its default delivery
+ * address), the login, and an enrollment in every course their school runs
+ * this semester. Then it signs the new student in.
+ */
+export async function registerStudent(form: FormData): Promise<ActionResult> {
+  const regNo = str(form, "reg_no").toUpperCase();
+  const password = String(form.get("password") ?? "");
+  if (password.length < 6) return { ok: false, message: "Choose a password of at least 6 characters." };
+  if (password !== String(form.get("password_confirm") ?? "")) {
+    return { ok: false, message: "The two passwords do not match." };
+  }
+  if (one("SELECT 1 FROM app_user WHERE username = ?", regNo) || one("SELECT 1 FROM student WHERE reg_no = ?", regNo)) {
+    return { ok: false, message: `${regNo} is already registered. Sign in instead.` };
+  }
+
+  const written = writeStudent(form, "create");
+  if (!written.ok) return written;
+
+  const student = one<{ name: string; dept_id: number }>(
+    "SELECT name, dept_id FROM student WHERE reg_no = ?",
+    regNo,
+  )!;
+  const semester = currentSemester();
+  let userId = 0;
+  let enrolled = 0;
+  try {
+    txn(() => {
+      userId = Number(
+        run(
+          `INSERT INTO app_user (role_id, username, display_name, linked_ref, password_hash)
+           VALUES ((SELECT role_id FROM app_role WHERE role_name = 'STUDENT'), ?, ?, ?, ?)`,
+          regNo,
+          student.name,
+          regNo,
+          hashPassword(password),
+        ).lastInsertRowid,
+      );
+      // Each course is taught by a faculty member of the school that offers it;
+      // the most junior one on the reporting chain takes the section.
+      enrolled = Number(
+        run(
+          `INSERT OR IGNORE INTO enrollment (reg_no, course_code, faculty_id, semester)
+           SELECT ?, c.course_code,
+                  (SELECT f.faculty_id FROM faculty f WHERE f.dept_id = c.dept_id
+                    ORDER BY f.reports_to IS NULL, f.faculty_id DESC LIMIT 1),
+                  ?
+             FROM course c
+            WHERE c.dept_id = ?
+              AND EXISTS (SELECT 1 FROM faculty f WHERE f.dept_id = c.dept_id)`,
+          regNo,
+          semester,
+          student.dept_id,
+        ).changes,
+      );
+    });
+  } catch (error) {
+    return fail(error);
+  }
+
+  await startSession(userId);
+  refreshAll();
+  return {
+    ok: true,
+    message: `Welcome, ${student.name}. Your account is ready${
+      enrolled ? ` and you are enrolled in ${enrolled} course(s) for ${semester}` : ""
+    }.`,
+    detail: written.detail,
+  };
+}
+
+function currentSemester() {
+  const now = new Date();
+  return `${now.getMonth() >= 6 ? "FALL" : "WINTER"}-${now.getFullYear()}`;
+}
+
+/** Attendance as the student reads it off VTOP; the database guards the bounds. */
+export async function saveAttendance(payload: {
+  enrollmentId: number;
+  held: number;
+  attended: number;
+}): Promise<ActionResult> {
+  const me = await currentUser();
+  const owner = one<{ reg_no: string }>("SELECT reg_no FROM enrollment WHERE enrollment_id = ?", payload.enrollmentId);
+  if (!me || !owner || me.linked_ref !== owner.reg_no) {
+    return { ok: false, message: "You can only update your own attendance." };
+  }
+  const held = Math.floor(payload.held);
+  const attended = Math.floor(payload.attended);
+  if (!(held >= 0) || !(attended >= 0)) return { ok: false, message: "Enter whole numbers." };
+  if (attended > held) return { ok: false, message: "You cannot have attended more classes than were held." };
+  try {
+    run(
+      "UPDATE enrollment SET classes_held = ?, classes_attended = ? WHERE enrollment_id = ?",
+      held,
+      attended,
+      payload.enrollmentId,
+    );
+    refreshAll();
+    revalidatePath("/condonation");
+    return { ok: true, message: `Attendance saved: ${attended}/${held}.` };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+function writeStudent(form: FormData, mode: "create" | "update"): ActionResult {
   const regNo = str(form, "reg_no").toUpperCase();
   const name = str(form, "name");
   const email = str(form, "email");
@@ -71,7 +222,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
     return { ok: false, message: "Registration number, name, email, phone and date of birth are required." };
   }
   if (!/^\d{2}[A-Z]{3}\d{4}$/.test(regNo)) {
-    return { ok: false, message: `"${regNo}" is not a VIT registration number — expected a form like 25BCE2256.` };
+    return { ok: false, message: `"${regNo}" is not a VIT registration number — expected two digits, three letters and four digits (YYBRN0000).` };
   }
   if (!email.includes("@")) return { ok: false, message: "That email address is not valid." };
   if (!/^\d{10}$/.test(phone)) return { ok: false, message: "Phone number must be exactly 10 digits." };
@@ -112,6 +263,8 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         }
 
         const exists = scalar<number>("SELECT COUNT(*) FROM student WHERE reg_no = ?", regNo) > 0;
+        if (exists && mode === "create") throw new Error(`${regNo} is already registered.`);
+        if (!exists && mode === "update") throw new Error(`No student ${regNo} to update.`);
 
         if (exists) {
           run(
@@ -218,6 +371,8 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
 
 export async function bookVisit(form: FormData): Promise<ActionResult> {
   const regNo = str(form, "reg_no").toUpperCase();
+  const denied = await guardStudent(regNo);
+  if (denied) return denied;
   const doctorId = Number(form.get("doctor_id"));
   const [slotDate, slotTime] = str(form, "slot").split("|");
   const complaint = str(form, "chief_complaint");
@@ -282,6 +437,8 @@ function roomCode(appointmentId: number) {
 }
 
 export async function openConsultation(appointmentId: number): Promise<ActionResult> {
+  const denied = await guardDoctor(appointmentId);
+  if (denied) return denied;
   const appt = one<{ doctor_id: number; chief_complaint: string }>(
     "SELECT doctor_id, chief_complaint FROM appointment WHERE appointment_id = ?",
     appointmentId,
@@ -329,6 +486,8 @@ export async function saveConsultation(payload: {
   complete: boolean;
 }): Promise<ActionResult> {
   const { consultationId, diagnosis, notes, isSensitive, complete } = payload;
+  const denied = await guardDoctor(appointmentOf(consultationId));
+  if (denied) return denied;
   if (!diagnosis.trim()) return { ok: false, message: "A diagnosis is required before saving." };
 
   try {
@@ -384,6 +543,8 @@ export async function prescribe(payload: {
   }[];
 }): Promise<ActionResult> {
   const { consultationId, advice, items } = payload;
+  const denied = await guardDoctor(appointmentOf(consultationId));
+  if (denied) return denied;
   if (!items.length) return { ok: false, message: "Add at least one medicine to the prescription." };
 
   const bad = items.find((i) => i.quantity < 1 || i.durationDays < 1);
@@ -462,6 +623,8 @@ export async function grantLeave(payload: {
   fitToResume: string;
 }): Promise<ActionResult> {
   const { consultationId, days, reason, diagnosisNote, advice, fitToResume } = payload;
+  const denied = await guardDoctor(appointmentOf(consultationId));
+  if (denied) return denied;
 
   if (!days || days < 1 || days > 30) {
     return { ok: false, message: "Leave duration must be between 1 and 30 days." };
@@ -544,6 +707,8 @@ INSERT INTO leave_document (certificate_id, ref_no, days_granted, …) VALUES (�
 /* ================================================================== 6. cart */
 
 export async function addToCart(regNo: string, drugId: number, quantity = 1): Promise<ActionResult> {
+  const denied = await guardStudent(regNo);
+  if (denied) return denied;
   if (!regNo) return { ok: false, message: "Load your profile first." };
   if (quantity < 1) return { ok: false, message: "Quantity must be at least 1." };
 
@@ -575,6 +740,8 @@ export async function addToCart(regNo: string, drugId: number, quantity = 1): Pr
 }
 
 export async function setCartQty(cartItemId: number, quantity: number): Promise<ActionResult> {
+  const denied = await guardCartLine(cartItemId);
+  if (denied) return denied;
   try {
     if (quantity < 1) run("DELETE FROM cart_item WHERE cart_item_id = ?", cartItemId);
     else run("UPDATE cart_item SET quantity = ? WHERE cart_item_id = ?", quantity, cartItemId);
@@ -586,6 +753,8 @@ export async function setCartQty(cartItemId: number, quantity: number): Promise<
 }
 
 export async function removeCartLine(cartItemId: number): Promise<ActionResult> {
+  const denied = await guardCartLine(cartItemId);
+  if (denied) return denied;
   const line = one<{ source: string }>("SELECT source FROM cart_item WHERE cart_item_id = ?", cartItemId);
   if (line?.source === "RX") {
     return {
@@ -606,6 +775,8 @@ export async function checkout(payload: {
   cartItemIds: number[];
 }): Promise<ActionResult> {
   const { regNo, paymentMode, cartItemIds } = payload;
+  const denied = await guardStudent(regNo);
+  if (denied) return denied;
   if (!cartItemIds.length) return { ok: false, message: "Your cart is empty." };
 
   const student = one<{ campus_id: number }>("SELECT campus_id FROM student WHERE reg_no = ?", regNo);
@@ -735,6 +906,8 @@ export async function advanceDelivery(orderId: number): Promise<ActionResult> {
 /* ========================================================= 8. notifications */
 
 export async function markAllRead(regNo: string): Promise<ActionResult> {
+  const denied = await guardStudent(regNo);
+  if (denied) return denied;
   run("UPDATE notification SET is_read = 1 WHERE reg_no = ? AND is_read = 0", regNo);
   revalidatePath("/student");
   return { ok: true, message: "Inbox marked as read." };

@@ -359,10 +359,23 @@ CREATE TABLE app_role (
 CREATE TABLE app_user (
   user_id       INTEGER PRIMARY KEY,
   role_id       INTEGER NOT NULL REFERENCES app_role(role_id),
-  username      TEXT    NOT NULL UNIQUE,
+  username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
   display_name  TEXT    NOT NULL,
+  -- reg_no for a STUDENT, doctor_id for a DOCTOR
   linked_ref    TEXT,
+  -- scrypt$<salt>$<hash>; NULL means the account cannot sign in
+  password_hash TEXT,
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
+);
+
+-- One row per signed-in browser. The cookie carries only the random token.
+-- last_seen_at is bumped by every poll, which is what "online" means.
+CREATE TABLE app_session (
+  token        TEXT    PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE access_audit (
@@ -431,7 +444,7 @@ CREATE TABLE notification (
   notification_id INTEGER PRIMARY KEY,
   reg_no          TEXT    NOT NULL REFERENCES student(reg_no) ON DELETE CASCADE,
   kind            TEXT    NOT NULL CHECK (kind IN
-                    ('APPOINTMENT','PRESCRIPTION','ORDER','LEAVE','ALERT')),
+                    ('APPOINTMENT','PRESCRIPTION','ORDER','LEAVE','ALERT','CALL')),
   title           TEXT    NOT NULL,
   body            TEXT    NOT NULL,
   ref_table       TEXT,
@@ -467,13 +480,36 @@ CREATE TABLE document_recipient (
   PRIMARY KEY (document_id, recipient_role)
 );
 
--- WebRTC signalling relayed through the database, so the teleconsultation
--- carries no third-party service: both peers poll this table for the room.
+-- A video call between two users. Ad-hoc calls are placed from the Calls
+-- page; a teleconsultation's call is opened with the consultation and carries
+-- its appointment. The caller is the WebRTC HOST, the callee the GUEST.
+CREATE TABLE call_session (
+  call_id        INTEGER PRIMARY KEY,
+  room_code      TEXT    NOT NULL UNIQUE,
+  caller_id      INTEGER REFERENCES app_user(user_id) ON DELETE SET NULL,
+  -- NULL until someone joins an open room by its code
+  callee_id      INTEGER REFERENCES app_user(user_id) ON DELETE SET NULL,
+  appointment_id INTEGER REFERENCES appointment(appointment_id) ON DELETE SET NULL,
+  status         TEXT    NOT NULL DEFAULT 'RINGING'
+                   CHECK (status IN ('OPEN','RINGING','ACTIVE','ENDED','DECLINED','MISSED')),
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  rang_at        TEXT,
+  answered_at    TEXT,
+  ended_at       TEXT,
+  host_seen_at   TEXT,
+  guest_seen_at  TEXT,
+  CHECK (caller_id IS NULL OR callee_id IS NULL OR caller_id <> callee_id)
+);
+
+-- WebRTC signalling relayed through the database, so the call carries no
+-- third-party service: both peers poll this table for their room.
 CREATE TABLE video_signal (
-  signal_id  INTEGER PRIMARY KEY,
+  -- AUTOINCREMENT, not plain rowid: an OFFER empties the room, and a reused
+  -- id would sit below the cursor a peer is already polling from.
+  signal_id  INTEGER PRIMARY KEY AUTOINCREMENT,
   room_code  TEXT    NOT NULL,
-  sender     TEXT    NOT NULL CHECK (sender IN ('DOCTOR','STUDENT')),
-  kind       TEXT    NOT NULL CHECK (kind IN ('OFFER','ANSWER','ICE','LEAVE')),
+  sender     TEXT    NOT NULL CHECK (sender IN ('HOST','GUEST')),
+  kind       TEXT    NOT NULL CHECK (kind IN ('HELLO','OFFER','ANSWER','ICE','LEAVE')),
   payload    TEXT    NOT NULL,
   created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -495,3 +531,6 @@ CREATE INDEX idx_cart_student        ON cart_item(reg_no);
 CREATE INDEX idx_notify_student      ON notification(reg_no, is_read);
 CREATE INDEX idx_leavedoc_student    ON leave_document(reg_no);
 CREATE INDEX idx_signal_room         ON video_signal(room_code, signal_id);
+CREATE INDEX idx_session_user        ON app_session(user_id);
+CREATE INDEX idx_call_callee         ON call_session(callee_id, status);
+CREATE INDEX idx_call_caller         ON call_session(caller_id, status);

@@ -50,7 +50,6 @@ type RxDraft = {
 
 export function DoctorConsole({
   doctor,
-  roster,
   stats,
   board,
   drugs,
@@ -58,8 +57,7 @@ export function DoctorConsole({
   leaveDocs,
   recipientsByDoc,
 }: {
-  doctor: { doctor_id: number; name: string; doctor_type: string; campus_name: string } | null;
-  roster: { doctor_id: number; name: string; doctor_type: string; booked: number; campus_name: string }[];
+  doctor: { doctor_id: number; name: string; doctor_type: string; campus_name: string; reg_council_no: string };
   stats: { waiting: number; seen: number; urgent: number; leaves: number };
   board: CareAppointment[];
   drugs: StoreDrug[];
@@ -70,55 +68,31 @@ export function DoctorConsole({
     { recipient_role: string; recipient_name: string; recipient_email: string | null }[]
   >;
 }) {
-  const router = useRouter();
   const [openId, setOpenId] = useState<number | null>(null);
   const [filter, setFilter] = useState("BOOKED");
 
   const filtered = board.filter((a) => (filter === "ALL" ? true : a.status === filter));
   const active = board.find((a) => a.appointment_id === openId) ?? null;
 
-  function switchDoctor(id: string) {
-    router.push(`/doctor?id=${id}`);
-  }
-
-  if (!doctor) return <Empty>No clinicians are registered.</Empty>;
-
   return (
     <div className="space-y-5">
       {/* ------------------------------------------------------------- header */}
-      <Card className="overflow-hidden">
-        <div className="grain flex flex-wrap items-center gap-4 px-5 py-4">
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-brand-deep text-white">
-            <Stethoscope size={19} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="eyebrow">Doctor Console · Administrator</p>
-            <h2 className="truncate text-[18px] font-semibold tracking-tight">{doctor.name}</h2>
-            <p className="truncate text-[12px] text-ink-soft">
-              {doctor.doctor_type === "GP"
-                ? "General Practitioner"
-                : doctor.doctor_type === "SPECIALIST"
-                  ? "Consultant Specialist"
-                  : "Counselling Psychologist"}{" "}
-              · {doctor.campus_name}
-            </p>
-          </div>
-          <label className="flex items-center gap-2 text-[11.5px] text-ink-mute">
-            Signed in as
-            <select
-              value={doctor.doctor_id}
-              onChange={(e) => switchDoctor(e.target.value)}
-              className="rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] text-ink"
-            >
-              {roster.map((d) => (
-                <option key={d.doctor_id} value={d.doctor_id}>
-                  {d.name} · {d.booked} waiting
-                </option>
-              ))}
-            </select>
-          </label>
+      <div className="card flex flex-wrap items-center gap-4 px-5 py-4">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-brand-wash text-brand-deep">
+          <Stethoscope size={21} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-[24px] leading-tight">{doctor.name}</h2>
+          <p className="mono mt-0.5 truncate text-[12px] text-ink-soft">
+            {doctor.doctor_type === "GP"
+              ? "General practitioner"
+              : doctor.doctor_type === "SPECIALIST"
+                ? "Consultant specialist"
+                : "Counselling psychologist"}{" "}
+            · {doctor.campus_name} · {doctor.reg_council_no}
+          </p>
         </div>
-      </Card>
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="In the queue" value={stats.waiting} tone="info" icon={<CalendarClock size={14} />} />
@@ -132,7 +106,7 @@ export function DoctorConsole({
         <SectionHead
           eyebrow="Appointments"
           title="Your queue"
-          desc="Sorted the way the triage view orders it — urgent first, then by slot. Every row here arrived from a student booking form."
+          desc="Urgent first, then by slot. Open a booking to start the consultation and call the student."
           right={
             <Segmented
               value={filter}
@@ -324,7 +298,6 @@ function ConsultationPanel({
       {section === "video" && (
         <VideoConsole
           room={appointment.video_room_code ?? `VITC-${String(appointment.appointment_id).padStart(4, "0")}`}
-          role="DOCTOR"
           counterpart={appointment.student_name}
           subtitle={`${appointment.student_name} · ${appointment.reg_no} · appointment #${appointment.appointment_id}`}
         />

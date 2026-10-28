@@ -17,7 +17,7 @@ import { all, scalar } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-/** The seventeen triggers, grouped by the journey step each one guards. */
+/** The triggers, grouped by the journey step each one guards. */
 const TRIGGERS = [
   {
     step: "Booking",
@@ -60,6 +60,13 @@ const TRIGGERS = [
       ["trg_condonation_attendance_writeback", "AFTER UPDATE · condonation_request", "Credits attendance on faculty approval."],
     ],
   },
+  {
+    step: "Calls",
+    tone: "info" as const,
+    rows: [
+      ["trg_notify_missed_call", "AFTER UPDATE · call_session", "Puts a call that rang out into the student's inbox."],
+    ],
+  },
 ] as const;
 
 const EXPLORE = [
@@ -74,7 +81,7 @@ const EXPLORE = [
     href: "/schema",
     icon: Table2,
     title: "Schema Explorer",
-    desc: "Every table, key, index and row in the 29-relation schema.",
+    desc: "Every table, key, index and row in the schema.",
   },
   {
     href: "/triggers",
