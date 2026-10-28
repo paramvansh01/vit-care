@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -46,7 +46,7 @@ import type {
 import { Card, Chip, Empty, SectionHead, Table, Td, Th, type Tone } from "@/components/ui";
 import { VideoConsole } from "@/components/video-console";
 import { LeaveLetter } from "@/components/leave-letter";
-import { Field, Feedback, Segmented, money, whenLabel } from "@/components/care-ui";
+import { Field, Feedback, Segmented, money, useKeptForm, whenLabel } from "@/components/care-ui";
 
 type Tab = "profile" | "book" | "care" | "pharmacy" | "documents" | "inbox";
 
@@ -337,6 +337,7 @@ export function StudentProfileForm({
   const router = useRouter();
   const [pending, start] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
+  const { attach, onSubmit, onInput } = useKeptForm(result, submit);
 
   function submit(formData: FormData) {
     start(async () => {
@@ -350,7 +351,7 @@ export function StudentProfileForm({
   }
 
   return (
-    <form action={submit} className="space-y-5">
+    <form ref={attach} onSubmit={onSubmit} onInput={onInput} className="space-y-5">
       <Card className="p-5">
         <SectionHead
           eyebrow={register ? "New student · step 1" : "Profile"}
@@ -363,6 +364,9 @@ export function StudentProfileForm({
               name="reg_no"
               defaultValue={profile?.reg_no ?? ""}
               readOnly={!register}
+              maxLength={9}
+              pattern="\d{2}[A-Za-z]{3}\d{4}"
+              title="Two digits, three letters, four digits — e.g. 21ABC1234"
               placeholder="YYBRN0000"
               className="inp mono uppercase read-only:bg-sunk read-only:text-ink-mute"
               required
@@ -393,6 +397,9 @@ export function StudentProfileForm({
               defaultValue={profile?.phone ?? ""}
               placeholder="10-digit mobile"
               inputMode="numeric"
+              maxLength={10}
+              pattern="\d{10}"
+              title="Exactly 10 digits"
               className="inp"
               required
             />
@@ -507,6 +514,10 @@ export function StudentProfileForm({
               name="proctor_phone"
               defaultValue={profile?.proctor_phone ?? ""}
               placeholder="10-digit mobile"
+              inputMode="numeric"
+              maxLength={10}
+              pattern="\d{10}"
+              title="Exactly 10 digits"
               className="inp"
             />
           </Field>
@@ -597,7 +608,6 @@ function BookTab({
   const [slot, setSlot] = useState("");
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [complaint, setComplaint] = useState("");
-  const formRef = useRef<HTMLFormElement>(null);
 
   const campusDoctors = doctors.filter((d) => d.campus_id === profile.campus_id);
   const slots = doctorId ? (slotsByDoctor[doctorId] ?? []) : [];
@@ -612,6 +622,7 @@ function BookTab({
   }, [picked, symptoms]);
 
   const chosen = slots.find((s) => `${s.slot_date}|${s.slot_time}` === slot);
+  const { attach, onSubmit, onInput, form: bookForm } = useKeptForm(result, submit);
 
   function submit(formData: FormData) {
     formData.set("reg_no", profile.reg_no);
@@ -628,14 +639,14 @@ function BookTab({
         setSlot("");
         setPicked(new Set());
         setComplaint("");
-        formRef.current?.reset();
+        bookForm?.reset();
         router.refresh();
       }
     });
   }
 
   return (
-    <form ref={formRef} action={submit} className="grid gap-5 lg:grid-cols-[1.35fr_1fr]">
+    <form ref={attach} onSubmit={onSubmit} onInput={onInput} className="grid gap-5 lg:grid-cols-[1.35fr_1fr]">
       <div className="space-y-5">
         <Card className="p-5">
           <SectionHead

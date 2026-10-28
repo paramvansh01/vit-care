@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LogIn } from "lucide-react";
 import { resetDb, signIn, type AuthResult } from "@/app/auth-actions";
-import { Field, Feedback } from "@/components/care-ui";
+import { Field, Feedback, useKeptForm } from "@/components/care-ui";
 import { DoctorForm } from "@/components/doctor-form";
 import { StudentProfileForm } from "@/components/student-portal";
 
@@ -29,6 +29,7 @@ export function AuthScreen({
   const [mode, setMode] = useState<Mode>(counts.accounts ? "signin" : "student");
   const [pending, start] = useTransition();
   const [result, setResult] = useState<AuthResult | null>(null);
+  const { attach, onSubmit, onInput } = useKeptForm(result, submit);
 
   function submit(form: FormData) {
     start(async () => {
@@ -81,7 +82,7 @@ export function AuthScreen({
 
           <div className="p-5 sm:p-6">
             {mode === "signin" && (
-              <form action={submit} className="max-w-md space-y-4">
+              <form ref={attach} onSubmit={onSubmit} onInput={onInput} className="max-w-md space-y-4">
                 <h2 className="text-[28px] leading-tight">Welcome back</h2>
                 <p className="text-[13px] text-ink-soft">
                   Students sign in with their registration number, doctors with their email.

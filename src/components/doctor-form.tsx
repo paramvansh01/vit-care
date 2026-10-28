@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, UserPlus } from "lucide-react";
 import { registerDoctor, type AuthResult } from "@/app/auth-actions";
-import { Field, Feedback, Segmented } from "@/components/care-ui";
+import { Field, Feedback, Segmented, useKeptForm } from "@/components/care-ui";
 
 /**
  * Registers a doctor: the superclass row, its one EER subclass row, their
@@ -27,6 +27,7 @@ export function DoctorForm({
   const [result, setResult] = useState<AuthResult | null>(null);
   const [type, setType] = useState("GP");
   const [formKey, setFormKey] = useState(0);
+  const { attach, onSubmit, onInput } = useKeptForm(result, submit);
 
   function submit(form: FormData) {
     form.set("doctor_type", type);
@@ -42,7 +43,7 @@ export function DoctorForm({
   }
 
   return (
-    <form key={formKey} action={submit} className="space-y-5">
+    <form key={formKey} ref={attach} onSubmit={onSubmit} onInput={onInput} className="space-y-5">
       <div className="grid gap-3.5 sm:grid-cols-2">
         <Field label="Full name" required>
           <input name="name" placeholder="Dr. Full Name" className="inp" required />

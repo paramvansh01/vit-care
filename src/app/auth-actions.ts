@@ -16,7 +16,8 @@ const str = (form: FormData, key: string) => String(form.get(key) ?? "").trim();
 export async function signIn(form: FormData): Promise<AuthResult> {
   const username = str(form, "username");
   const password = String(form.get("password") ?? "");
-  if (!username || !password) return { ok: false, message: "Enter your username and password." };
+  if (!username) return { ok: false, message: "Enter your registration number or email.", field: "username" };
+  if (!password) return { ok: false, message: "Enter your password.", field: "password" };
 
   const user = one<{ user_id: number; password_hash: string | null; role: Role; display_name: string }>(
     `SELECT u.user_id, u.password_hash, r.role_name AS role, u.display_name
@@ -25,7 +26,7 @@ export async function signIn(form: FormData): Promise<AuthResult> {
     username,
   );
   if (!user || !verifyPassword(password, user.password_hash)) {
-    return { ok: false, message: "That username and password do not match an account." };
+    return { ok: false, message: "That username and password do not match an account.", field: "password" };
   }
 
   await startSession(user.user_id);
@@ -62,20 +63,20 @@ export async function registerDoctor(form: FormData): Promise<AuthResult> {
   const password = String(form.get("password") ?? "");
   const specIds = form.getAll("spec_id").map(Number).filter(Boolean);
 
-  if (!name || !email || !council) {
-    return { ok: false, message: "Name, email and medical council registration number are required." };
-  }
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, message: "That email address is not valid." };
+  const bad = (field: string, message: string): AuthResult => ({ ok: false, message, field });
+  if (!name) return bad("name", "Enter the doctor's full name.");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return bad("email", "That email address is not valid.");
+  if (!council) return bad("reg_council_no", "Enter the medical council registration number.");
+  if (!one("SELECT 1 FROM campus WHERE campus_id = ?", campusId)) return bad("campus_id", "Choose a campus.");
+  if (!(years >= 0 && years <= 60)) return bad("years_experience", "Years of experience must be between 0 and 60.");
+  if (!(fee >= 0)) return bad("consult_fee", "The consultation fee cannot be negative.");
   if (!["GP", "SPECIALIST", "COUNSELOR"].includes(type)) return { ok: false, message: "Choose the kind of doctor." };
-  if (!one("SELECT 1 FROM campus WHERE campus_id = ?", campusId)) return { ok: false, message: "Choose a campus." };
-  if (!(years >= 0 && years <= 60)) return { ok: false, message: "Years of experience must be between 0 and 60." };
-  if (!(fee >= 0)) return { ok: false, message: "The consultation fee cannot be negative." };
-  if (password.length < 6) return { ok: false, message: "Set a password of at least 6 characters." };
+  if (password.length < 6) return bad("password", "Set a password of at least 6 characters.");
   if (one("SELECT 1 FROM app_user WHERE username = ?", email) || one("SELECT 1 FROM doctor WHERE LOWER(email) = ?", email)) {
-    return { ok: false, message: `${email} is already registered.` };
+    return bad("email", `${email} is already registered.`);
   }
   if (one("SELECT 1 FROM doctor WHERE reg_council_no = ?", council)) {
-    return { ok: false, message: `Council number ${council} is already registered to another doctor.` };
+    return bad("reg_council_no", `Council number ${council} is already registered to another doctor.`);
   }
 
   const me = await currentUser();

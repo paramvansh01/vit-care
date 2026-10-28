@@ -21,6 +21,17 @@ function capturing<T>(fn: () => T): { result: T; fired: string[] } {
 
 function fail(error: unknown): ActionResult {
   const raw = error instanceof Error ? error.message : String(error);
+  // A UNIQUE violation names its column, which is also the form field's name.
+  const unique = /UNIQUE constraint failed: \w+\.(\w+)/.exec(raw);
+  if (unique) {
+    const column = unique[1];
+    return {
+      ok: false,
+      message: `That ${column.replace(/_/g, " ")} is already registered to another account.`,
+      field: column,
+      detail: ["The database rejected the write — no rows changed."],
+    };
+  }
   const clean = raw.replace(/^.*?:\s*/, "").trim() || raw;
   return {
     ok: false,
@@ -28,6 +39,8 @@ function fail(error: unknown): ActionResult {
     detail: ["The database rejected the write — no rows changed."],
   };
 }
+
+const invalid = (field: string, message: string): ActionResult => ({ ok: false, message, field });
 
 function txn<T>(fn: () => T): T {
   db.exec("BEGIN");
@@ -109,12 +122,15 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
 export async function registerStudent(form: FormData): Promise<ActionResult> {
   const regNo = str(form, "reg_no").toUpperCase();
   const password = String(form.get("password") ?? "");
-  if (password.length < 6) return { ok: false, message: "Choose a password of at least 6 characters." };
-  if (password !== String(form.get("password_confirm") ?? "")) {
-    return { ok: false, message: "The two passwords do not match." };
-  }
   if (one("SELECT 1 FROM app_user WHERE username = ?", regNo) || one("SELECT 1 FROM student WHERE reg_no = ?", regNo)) {
-    return { ok: false, message: `${regNo} is already registered. Sign in instead.` };
+    return invalid("reg_no", `${regNo} is already registered. Sign in instead.`);
+  }
+
+  const problem = validateStudent(form);
+  if (problem) return problem;
+  if (password.length < 6) return invalid("password", "Choose a password of at least 6 characters.");
+  if (password !== String(form.get("password_confirm") ?? "")) {
+    return invalid("password_confirm", "The two passwords do not match.");
   }
 
   const written = writeStudent(form, "create");
@@ -207,6 +223,36 @@ export async function saveAttendance(payload: {
   }
 }
 
+/** Field-by-field checks, in the order the form shows them. */
+function validateStudent(form: FormData): ActionResult | null {
+  const regNo = str(form, "reg_no").toUpperCase();
+  const phone = str(form, "phone");
+  const year = Number(form.get("year_of_study") || 1);
+  const email = str(form, "email");
+  const proctorPhone = str(form, "proctor_phone");
+
+  if (!regNo) return invalid("reg_no", "Enter your registration number.");
+  if (!/^\d{2}[A-Z]{3}\d{4}$/.test(regNo)) {
+    return invalid(
+      "reg_no",
+      `"${regNo}" is not a VIT registration number — expected two digits, three letters and four digits (YYBRN0000).`,
+    );
+  }
+  if (!str(form, "name")) return invalid("name", "Enter your full name.");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return invalid("email", "That email address is not valid.");
+  if (!/^\d{10}$/.test(phone)) {
+    return invalid("phone", `Phone number must be exactly 10 digits — you entered ${phone.replace(/\D/g, "").length}.`);
+  }
+  if (!str(form, "dob")) return invalid("dob", "Enter your date of birth.");
+  if (!(year >= 1 && year <= 5)) return invalid("year_of_study", "Year of study must be between 1 and 5.");
+  if (!str(form, "campus")) return invalid("campus", "Enter your campus.");
+  if (!str(form, "department")) return invalid("department", "Enter your school or department.");
+  if (proctorPhone && !/^\d{10}$/.test(proctorPhone)) {
+    return invalid("proctor_phone", "The proctor's phone number must be exactly 10 digits.");
+  }
+  return null;
+}
+
 function writeStudent(form: FormData, mode: "create" | "update"): ActionResult {
   const regNo = str(form, "reg_no").toUpperCase();
   const name = str(form, "name");
@@ -218,15 +264,8 @@ function writeStudent(form: FormData, mode: "create" | "update"): ActionResult {
   const campusText = str(form, "campus");
   const deptText = str(form, "department");
 
-  if (!regNo || !name || !email || !phone || !dob) {
-    return { ok: false, message: "Registration number, name, email, phone and date of birth are required." };
-  }
-  if (!/^\d{2}[A-Z]{3}\d{4}$/.test(regNo)) {
-    return { ok: false, message: `"${regNo}" is not a VIT registration number — expected two digits, three letters and four digits (YYBRN0000).` };
-  }
-  if (!email.includes("@")) return { ok: false, message: "That email address is not valid." };
-  if (!/^\d{10}$/.test(phone)) return { ok: false, message: "Phone number must be exactly 10 digits." };
-  if (year < 1 || year > 5) return { ok: false, message: "Year of study must be between 1 and 5." };
+  const problem = validateStudent(form);
+  if (problem) return problem;
 
   const campus = one<{ campus_id: number }>(
     `SELECT campus_id FROM campus
@@ -237,7 +276,7 @@ function writeStudent(form: FormData, mode: "create" | "update"): ActionResult {
   );
   if (!campus) {
     const known = all<{ name: string }>("SELECT name FROM campus").map((c) => c.name).join(", ");
-    return { ok: false, message: `Campus "${campusText}" is not a VIT campus. Known campuses: ${known}.` };
+    return invalid("campus", `Campus "${campusText}" is not a VIT campus. Known campuses: ${known}.`);
   }
 
   let dept = one<{ dept_id: number }>(
@@ -385,7 +424,7 @@ export async function bookVisit(form: FormData): Promise<ActionResult> {
   if (!doctorId) return { ok: false, message: "Choose a doctor." };
   if (!slotDate || !slotTime) return { ok: false, message: "Choose an appointment slot." };
   if (complaint.length < 8) {
-    return { ok: false, message: "Describe your complaint in a little more detail (at least 8 characters)." };
+    return invalid("chief_complaint", "Describe your complaint in a little more detail (at least 8 characters).");
   }
 
   try {
