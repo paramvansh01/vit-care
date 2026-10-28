@@ -5,6 +5,15 @@ import { all, db, one, run, scalar } from "@/lib/db";
 import type { ActionResult } from "@/app/actions";
 import { currentUser, startSession } from "@/lib/auth";
 import { hashPassword } from "@/lib/password";
+import {
+  capturePayment,
+  createOrder,
+  fetchPayment,
+  razorpayKeyId,
+  razorpayTestMode,
+  refundPayment,
+  signatureValid,
+} from "@/lib/razorpay";
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -808,14 +817,33 @@ export async function removeCartLine(cartItemId: number): Promise<ActionResult> 
 
 /* ============================================================== 7. checkout */
 
-export async function checkout(payload: {
+type CheckoutLine = {
+  cart_item_id: number;
+  drug_id: number;
+  quantity: number;
+  unit_price: number;
+  source: string;
+  prescription_id: number | null;
+  drug_name: string;
+  on_hand: number;
+};
+
+type PreparedOrder = {
   regNo: string;
-  paymentMode: string;
+  pharmacyId: number;
+  addressId: number;
   cartItemIds: number[];
-}): Promise<ActionResult> {
-  const { regNo, paymentMode, cartItemIds } = payload;
-  const denied = await guardStudent(regNo);
-  if (denied) return denied;
+  lines: CheckoutLine[];
+  amountPaise: number;
+};
+
+/**
+ * Everything an order needs, read and checked before anyone is asked to pay:
+ * the campus pharmacy, the delivery address, the cart lines with their price,
+ * and whether the pharmacy holds enough stock. The stock trigger still has
+ * the final word when the order is written.
+ */
+function prepareOrder(regNo: string, cartItemIds: number[]): PreparedOrder | ActionResult {
   if (!cartItemIds.length) return { ok: false, message: "Your cart is empty." };
 
   const student = one<{ campus_id: number }>("SELECT campus_id FROM student WHERE reg_no = ?", regNo);
@@ -836,88 +864,314 @@ export async function checkout(payload: {
   }
 
   const placeholders = cartItemIds.map(() => "?").join(",");
-  const lines = all<{
-    cart_item_id: number;
-    drug_id: number;
-    quantity: number;
-    unit_price: number;
-    source: string;
-    prescription_id: number | null;
-    drug_name: string;
-  }>(
+  const lines = all<CheckoutLine>(
     `SELECT ci.cart_item_id, ci.drug_id, ci.quantity, d.unit_price, ci.source,
-            ci.prescription_id, d.name AS drug_name
-       FROM cart_item ci JOIN drug d ON d.drug_id = ci.drug_id
+            ci.prescription_id, d.name AS drug_name,
+            COALESCE(i.qty_on_hand, 0) AS on_hand
+       FROM cart_item ci
+       JOIN drug d ON d.drug_id = ci.drug_id
+       LEFT JOIN inventory i ON i.drug_id = ci.drug_id AND i.pharmacy_id = ?
       WHERE ci.reg_no = ? AND ci.cart_item_id IN (${placeholders})`,
+    pharmacy.pharmacy_id,
     regNo,
     ...cartItemIds,
   );
   if (!lines.length) return { ok: false, message: "Those cart lines no longer exist." };
 
+  const short = lines.find((l) => l.quantity > l.on_hand);
+  if (short) {
+    return {
+      ok: false,
+      message: `Only ${short.on_hand} × ${short.drug_name} in stock at your pharmacy — reduce the quantity first.`,
+    };
+  }
+
+  return {
+    regNo,
+    pharmacyId: pharmacy.pharmacy_id,
+    addressId: address.address_id,
+    cartItemIds: lines.map((l) => l.cart_item_id),
+    lines,
+    amountPaise: lines.reduce((sum, l) => sum + Math.round(l.unit_price * l.quantity * 100), 0),
+  };
+}
+
+/**
+ * Writes the order. `inside` runs in the same transaction, so a payment row
+ * is only ever marked PAID together with the order it paid for.
+ */
+function placeOrder(prep: PreparedOrder, paymentMode: string, inside?: (orderId: number) => void) {
+  const { regNo, lines, cartItemIds } = prep;
+  const placeholders = cartItemIds.map(() => "?").join(",");
   const rxLine = lines.find((l) => l.source === "RX" && l.prescription_id);
   const orderType = lines.some((l) => l.source === "RX") ? "RX" : "OTC";
+  const paidWith = paymentMode === "COD" ? "cash on delivery" : "paid online via Razorpay";
 
-  try {
-    const { result, fired } = capturing(() =>
-      txn(() => {
-        const info = run(
-          `INSERT INTO pharmacy_order (reg_no, pharmacy_id, address_id, prescription_id, order_type, payment_mode)
-           VALUES (?,?,?,?,?,?)`,
-          regNo,
-          pharmacy.pharmacy_id,
-          address.address_id,
-          rxLine?.prescription_id ?? null,
-          orderType,
-          paymentMode,
-        );
-        const orderId = Number(info.lastInsertRowid);
+  return capturing(() =>
+    txn(() => {
+      const info = run(
+        `INSERT INTO pharmacy_order (reg_no, pharmacy_id, address_id, prescription_id, order_type, payment_mode)
+         VALUES (?,?,?,?,?,?)`,
+        regNo,
+        prep.pharmacyId,
+        prep.addressId,
+        rxLine?.prescription_id ?? null,
+        orderType,
+        paymentMode,
+      );
+      const orderId = Number(info.lastInsertRowid);
 
-        lines.forEach((line, index) => {
-          run(
-            `INSERT INTO order_item (order_id, line_no, drug_id, quantity, unit_price, line_total)
-             VALUES (?,?,?,?,?,?)`,
-            orderId,
-            index + 1,
-            line.drug_id,
-            line.quantity,
-            line.unit_price,
-            Math.round(line.unit_price * line.quantity * 100) / 100,
-          );
-        });
-
-        // The lines have become order lines, so they leave the cart.
-        run(`DELETE FROM cart_item WHERE cart_item_id IN (${placeholders})`, ...cartItemIds);
-
+      lines.forEach((line, index) => {
         run(
-          `INSERT INTO notification (reg_no, kind, title, body, ref_table, ref_id)
-           VALUES (?, 'ORDER', 'Order #' || ? || ' placed',
-                   ? || ' item(s) are on the way to your hostel room. Payment: ' || ? || '.',
-                   'pharmacy_order', ?)`,
-          regNo,
+          `INSERT INTO order_item (order_id, line_no, drug_id, quantity, unit_price, line_total)
+           VALUES (?,?,?,?,?,?)`,
           orderId,
-          lines.length,
-          paymentMode,
-          orderId,
+          index + 1,
+          line.drug_id,
+          line.quantity,
+          line.unit_price,
+          Math.round(line.unit_price * line.quantity * 100) / 100,
         );
-        return orderId;
-      }),
-    );
+      });
 
-    const total = scalar<number>("SELECT total_amount FROM pharmacy_order WHERE order_id = ?", result);
-    refreshAll();
-    return {
-      ok: true,
-      message: `Order #${result} placed · ₹${total.toFixed(2)} · ${
-        paymentMode === "COD" ? "cash on delivery" : paymentMode
-      }.`,
-      detail: fired,
-      sql: `INSERT INTO pharmacy_order (…) VALUES (…);
-INSERT INTO order_item (…) VALUES (…);  -- ${lines.length} line(s)
+      // The lines have become order lines, so they leave the cart.
+      run(`DELETE FROM cart_item WHERE cart_item_id IN (${placeholders})`, ...cartItemIds);
+
+      run(
+        `INSERT INTO notification (reg_no, kind, title, body, ref_table, ref_id)
+         VALUES (?, 'ORDER', 'Order #' || ? || ' placed',
+                 ? || ' item(s) are on the way to your hostel room — ' || ? || '.',
+                 'pharmacy_order', ?)`,
+        regNo,
+        orderId,
+        lines.length,
+        paidWith,
+        orderId,
+      );
+      inside?.(orderId);
+      return orderId;
+    }),
+  );
+}
+
+function orderPlaced(orderId: number, lines: number, fired: string[], how: string): ActionResult {
+  const total = scalar<number>("SELECT total_amount FROM pharmacy_order WHERE order_id = ?", orderId);
+  refreshAll();
+  return {
+    ok: true,
+    message: `Order #${orderId} placed · ₹${total.toFixed(2)} · ${how}.`,
+    detail: fired,
+    sql: `INSERT INTO pharmacy_order (…) VALUES (…);
+INSERT INTO order_item (…) VALUES (…);  -- ${lines} line(s)
 -- trg_stock_availability_guard, then trg_stock_deduct rolls the total up`,
-    };
+  };
+}
+
+/** Cash on delivery. Online payment goes through startOnlinePayment instead. */
+export async function checkout(payload: {
+  regNo: string;
+  paymentMode: string;
+  cartItemIds: number[];
+}): Promise<ActionResult> {
+  const { regNo, paymentMode, cartItemIds } = payload;
+  const denied = await guardStudent(regNo);
+  if (denied) return denied;
+  if (paymentMode !== "COD") {
+    return { ok: false, message: "Online payments go through Razorpay — choose “Pay online”." };
+  }
+
+  const prep = prepareOrder(regNo, cartItemIds);
+  if ("ok" in prep) return prep;
+  try {
+    const { result, fired } = placeOrder(prep, "COD");
+    return orderPlaced(result, prep.lines.length, fired, "cash on delivery");
   } catch (error) {
     return fail(error);
   }
+}
+
+/* ======================================================= 7b. online payment */
+
+export type OnlinePaymentStart =
+  | (ActionResult & { ok: false })
+  | {
+      ok: true;
+      keyId: string;
+      gatewayOrderId: string;
+      amountPaise: number;
+      currency: string;
+      prefill: { name: string; email: string; contact: string };
+      testMode: boolean;
+    };
+
+/**
+ * Opens a Razorpay order for the selected cart lines. The amount is computed
+ * here from catalogue prices — never taken from the browser — and recorded in
+ * `payment` as CREATED before the student sees the payment window.
+ */
+export async function startOnlinePayment(payload: {
+  regNo: string;
+  cartItemIds: number[];
+}): Promise<OnlinePaymentStart> {
+  const { regNo, cartItemIds } = payload;
+  const denied = await guardStudent(regNo);
+  if (denied) return { ...denied, ok: false };
+
+  const keyId = razorpayKeyId();
+  if (!keyId) {
+    return { ok: false, message: "Online payment is not configured on this server (RAZORPAY_KEY_ID missing)." };
+  }
+
+  const prep = prepareOrder(regNo, cartItemIds);
+  if ("ok" in prep) return { ...prep, ok: false };
+  if (prep.amountPaise < 100) return { ok: false, message: "Online payments start at ₹1 — use cash on delivery." };
+
+  const student = one<{ name: string; email: string; phone: string }>(
+    "SELECT name, email, phone FROM student WHERE reg_no = ?",
+    regNo,
+  )!;
+
+  try {
+    const attempt = scalar<number>("SELECT COUNT(*) + 1 FROM payment WHERE reg_no = ?", regNo);
+    const order = await createOrder(prep.amountPaise, `${regNo}-${attempt}`, {
+      reg_no: regNo,
+      lines: String(prep.lines.length),
+    });
+    run(
+      "INSERT INTO payment (reg_no, gateway_order_id, amount_paise, currency) VALUES (?, ?, ?, ?)",
+      regNo,
+      order.id,
+      order.amount,
+      order.currency,
+    );
+    return {
+      ok: true,
+      keyId,
+      gatewayOrderId: order.id,
+      amountPaise: order.amount,
+      currency: order.currency,
+      prefill: { name: student.name, email: student.email, contact: student.phone },
+      testMode: razorpayTestMode(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `${error instanceof Error ? error.message : String(error)} — is this laptop online?`,
+    };
+  }
+}
+
+/**
+ * Called with what Razorpay's checkout hands back. The signature is checked
+ * against the key secret, the payment is re-read from Razorpay, and only then
+ * is the order written — in the same transaction that marks the payment PAID.
+ */
+export async function completeOnlinePayment(payload: {
+  regNo: string;
+  cartItemIds: number[];
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}): Promise<ActionResult> {
+  const { regNo, cartItemIds, razorpay_order_id: gOrder, razorpay_payment_id: gPay } = payload;
+  const denied = await guardStudent(regNo);
+  if (denied) return denied;
+
+  const row = one<{ payment_id: number; amount_paise: number; status: string; order_id: number | null }>(
+    "SELECT payment_id, amount_paise, status, order_id FROM payment WHERE gateway_order_id = ? AND reg_no = ?",
+    gOrder,
+    regNo,
+  );
+  if (!row) return { ok: false, message: "That payment does not belong to this account." };
+  if (row.status === "PAID" && row.order_id) {
+    return { ok: true, message: `Already paid — that is order #${row.order_id}.` };
+  }
+
+  const markFailed = (reason: string) =>
+    run(
+      "UPDATE payment SET status = 'FAILED', failure_reason = ?, gateway_payment_id = ? WHERE payment_id = ?",
+      reason,
+      gPay,
+      row.payment_id,
+    );
+
+  if (!signatureValid(gOrder, gPay, payload.razorpay_signature)) {
+    markFailed("signature mismatch");
+    return { ok: false, message: "Razorpay's signature did not verify, so no order was placed." };
+  }
+
+  try {
+    let gateway = await fetchPayment(gPay);
+    if (gateway.order_id !== gOrder || gateway.amount !== row.amount_paise) {
+      markFailed("amount or order mismatch");
+      return { ok: false, message: "The payment does not match this order, so no order was placed." };
+    }
+    if (gateway.status === "authorized") gateway = await capturePayment(gPay, row.amount_paise);
+    if (gateway.status !== "captured") {
+      markFailed(`gateway status ${gateway.status}`);
+      return { ok: false, message: `Razorpay reports this payment as ${gateway.status}.` };
+    }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+
+  // The money is in. Write the order; if the cart changed under us, refund.
+  const prep = prepareOrder(regNo, cartItemIds);
+  const problem =
+    "ok" in prep
+      ? prep.message
+      : prep.amountPaise !== row.amount_paise
+        ? "the cart changed while you were paying"
+        : null;
+
+  if (problem || "ok" in prep) {
+    await refundPayment(gPay).catch(() => {});
+    run(
+      "UPDATE payment SET status = 'REFUNDED', failure_reason = ?, gateway_payment_id = ? WHERE payment_id = ?",
+      problem,
+      gPay,
+      row.payment_id,
+    );
+    return { ok: false, message: `Payment refunded — ${problem}. Nothing was ordered.` };
+  }
+
+  try {
+    const { result, fired } = placeOrder(prep, "RAZORPAY", (orderId) =>
+      run(
+        `UPDATE payment SET status = 'PAID', gateway_payment_id = ?, order_id = ?, paid_at = datetime('now')
+          WHERE payment_id = ?`,
+        gPay,
+        orderId,
+        row.payment_id,
+      ),
+    );
+    return orderPlaced(result, prep.lines.length, fired, `paid online · ${gPay}`);
+  } catch (error) {
+    await refundPayment(gPay).catch(() => {});
+    run(
+      "UPDATE payment SET status = 'REFUNDED', failure_reason = ?, gateway_payment_id = ? WHERE payment_id = ?",
+      error instanceof Error ? error.message : String(error),
+      gPay,
+      row.payment_id,
+    );
+    return { ...fail(error), message: `Payment refunded — the order could not be placed: ${fail(error).message}` };
+  }
+}
+
+/** The payment window was closed or the gateway declined; keep the record honest. */
+export async function abandonOnlinePayment(payload: {
+  regNo: string;
+  gatewayOrderId: string;
+  reason: string;
+}): Promise<void> {
+  if (await guardStudent(payload.regNo)) return;
+  run(
+    `UPDATE payment SET status = 'FAILED', failure_reason = ?
+      WHERE gateway_order_id = ? AND reg_no = ? AND status = 'CREATED'`,
+    payload.reason.slice(0, 200),
+    payload.gatewayOrderId,
+    payload.regNo,
+  );
 }
 
 export async function advanceDelivery(orderId: number): Promise<ActionResult> {
