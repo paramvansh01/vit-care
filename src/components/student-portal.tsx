@@ -16,11 +16,9 @@ import {
   Plus,
   Search,
   ShieldCheck,
-  ShoppingCart,
   Stethoscope,
   Trash2,
   Truck,
-  UserRound,
   Video,
 } from "lucide-react";
 import {
@@ -28,7 +26,9 @@ import {
   bookVisit,
   checkout,
   markAllRead,
+  registerStudent,
   removeCartLine,
+  saveAttendance,
   saveProfile,
   setCartQty,
 } from "@/app/care-actions";
@@ -39,6 +39,7 @@ import type {
   LeaveDoc,
   Notice,
   StoreDrug,
+  Enrollment,
   StudentOrder,
   StudentProfile,
 } from "@/lib/care";
@@ -60,7 +61,6 @@ const ORDER_TONE: Record<string, Tone> = {
 
 export function StudentPortal({
   profile,
-  roster,
   doctors,
   slotsByDoctor,
   symptoms,
@@ -74,9 +74,9 @@ export function StudentPortal({
   campusList,
   deptList,
   pharmacy,
+  enrollments,
 }: {
-  profile: StudentProfile | null;
-  roster: { reg_no: string; name: string }[];
+  profile: StudentProfile;
   doctors: {
     doctor_id: number;
     name: string;
@@ -99,85 +99,61 @@ export function StudentPortal({
   campusList: { campus_id: number; code: string; name: string }[];
   deptList: { dept_id: number; campus_id: number; code: string; name: string }[];
   pharmacy: { name: string; location: string } | null;
+  enrollments: Enrollment[];
 }) {
-  const router = useRouter();
-  const [tab, setTab] = useState<Tab>(profile ? "care" : "profile");
+  const [tab, setTab] = useState<Tab>(appointments.length ? "care" : "book");
 
   const unread = notices.filter((n) => !n.is_read).length;
   const rxCount = cart.filter((c) => c.source === "RX").length;
+  const waiting = appointments.filter((a) => a.status === "BOOKED").length;
 
-  function switchStudent(reg: string) {
-    router.push(reg ? `/student?reg=${encodeURIComponent(reg)}` : "/student");
-  }
-
-  const TABS: { id: Tab; label: string; icon: typeof UserRound; badge?: number }[] = [
-    { id: "profile", label: "My Profile", icon: UserRound },
-    { id: "book", label: "Book a Consultation", icon: CalendarClock },
-    { id: "care", label: "My Care", icon: Stethoscope },
-    { id: "pharmacy", label: "Cart & Pharmacy", icon: ShoppingCart, badge: cart.length },
-    { id: "documents", label: "Medical Leave", icon: FileText, badge: docs.length },
-    { id: "inbox", label: "Notifications", icon: Bell, badge: unread },
+  const TABS: { id: Tab; label: string; badge?: number }[] = [
+    { id: "care", label: "My care", badge: waiting },
+    { id: "book", label: "Book" },
+    { id: "pharmacy", label: "Cart & pharmacy", badge: cart.length },
+    { id: "documents", label: "Medical leave", badge: docs.length },
+    { id: "inbox", label: "Inbox", badge: unread },
+    { id: "profile", label: "Profile & attendance" },
   ];
 
   return (
     <div className="space-y-5">
       {/* ------------------------------------------------------------- header */}
-      <Card className="overflow-hidden">
-        <div className="grain flex flex-wrap items-center gap-4 border-b border-line px-5 py-4">
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-brand-deep text-[15px] font-semibold text-white">
-            {profile ? initials(profile.name) : <UserRound size={19} />}
+      <div className="card overflow-hidden">
+        <div className="flex flex-wrap items-center gap-4 px-5 py-4">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-brand-wash font-serif text-[18px] font-semibold text-brand-deep">
+            {initials(profile.name)}
           </span>
           <div className="min-w-0 flex-1">
-            <p className="eyebrow">Student Portal</p>
-            <h2 className="truncate text-[18px] font-semibold tracking-tight">
-              {profile ? profile.name : "No profile loaded"}
-            </h2>
-            <p className="truncate text-[12px] text-ink-soft">
-              {profile
-                ? `${profile.reg_no} · Year ${profile.year_of_study} · ${profile.dept_code} · ${profile.campus_name}`
-                : "Create your profile below, or load an existing registration number."}
+            <h2 className="truncate text-[24px] leading-tight">{profile.name}</h2>
+            <p className="mono mt-0.5 truncate text-[12px] text-ink-soft">
+              {profile.reg_no} · Year {profile.year_of_study} · {profile.dept_code} · {profile.campus_name}
             </p>
           </div>
-
-          <label className="flex items-center gap-2 text-[11.5px] text-ink-mute">
-            Switch student
-            <select
-              value={profile?.reg_no ?? ""}
-              onChange={(e) => switchStudent(e.target.value)}
-              className="rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] text-ink"
-            >
-              <option value="">— new profile —</option>
-              {roster.map((s) => (
-                <option key={s.reg_no} value={s.reg_no}>
-                  {s.reg_no} · {s.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="flex gap-6 text-right">
+            <Mini k="Appointments" v={appointments.length} />
+            <Mini k="In cart" v={cart.length} />
+            <Mini k="Unread" v={unread} />
+          </div>
         </div>
 
-        {/* tabs */}
-        <div className="flex gap-1 overflow-x-auto px-3 py-2">
+        <div className="flex gap-0 overflow-x-auto border-t border-line bg-toolbar px-2">
           {TABS.map((t) => {
-            const Icon = t.icon;
             const active = tab === t.id;
             return (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 className={[
-                  "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[12.5px] transition",
-                  active
-                    ? "bg-brand-wash font-semibold text-brand-deep"
-                    : "text-ink-soft hover:bg-sunk hover:text-ink",
+                  "label flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 transition",
+                  active ? "border-brand-deep text-ink" : "border-transparent text-ink-soft hover:text-ink",
                 ].join(" ")}
               >
-                <Icon size={14} strokeWidth={active ? 2.3 : 1.9} />
                 {t.label}
                 {t.badge ? (
                   <span
-                    className={`ml-0.5 rounded-full px-1.5 text-[10px] font-semibold ${
-                      active ? "bg-brand text-white" : "bg-sunk text-ink-mute"
+                    className={`rounded px-1.5 text-[10.5px] ${
+                      active ? "bg-brand text-white" : "bg-brand-tint text-brand-deep"
                     }`}
                   >
                     {t.badge}
@@ -187,20 +163,19 @@ export function StudentPortal({
             );
           })}
         </div>
-      </Card>
-
-      {!profile && tab !== "profile" && (
-        <Empty>Load or create a profile first — every other tab is keyed to your registration number.</Empty>
-      )}
+      </div>
 
       {tab === "profile" && (
-        <ProfileTab profile={profile} campusList={campusList} deptList={deptList} />
+        <div className="space-y-5">
+          <AttendanceCard enrollments={enrollments} />
+          <StudentProfileForm profile={profile} campusList={campusList} deptList={deptList} />
+        </div>
       )}
-      {tab === "book" && profile && (
+      {tab === "book" && (
         <BookTab profile={profile} doctors={doctors} slotsByDoctor={slotsByDoctor} symptoms={symptoms} />
       )}
-      {tab === "care" && profile && <CareTab appointments={appointments} />}
-      {tab === "pharmacy" && profile && (
+      {tab === "care" && <CareTab appointments={appointments} onBook={() => setTab("book")} />}
+      {tab === "pharmacy" && (
         <PharmacyTab
           regNo={profile.reg_no}
           cart={cart}
@@ -210,24 +185,154 @@ export function StudentPortal({
           rxCount={rxCount}
         />
       )}
-      {tab === "documents" && profile && (
-        <DocumentsTab docs={docs} recipientsByDoc={recipientsByDoc} />
-      )}
-      {tab === "inbox" && profile && <InboxTab regNo={profile.reg_no} notices={notices} />}
+      {tab === "documents" && <DocumentsTab docs={docs} recipientsByDoc={recipientsByDoc} />}
+      {tab === "inbox" && <InboxTab regNo={profile.reg_no} notices={notices} />}
     </div>
+  );
+}
+
+function Mini({ k, v }: { k: string; v: number }) {
+  return (
+    <div>
+      <p className="font-serif text-[22px] leading-none">{v}</p>
+      <p className="eyebrow mt-1">{k}</p>
+    </div>
+  );
+}
+
+/* ================================================================= attendance */
+
+function AttendanceCard({ enrollments }: { enrollments: Enrollment[] }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const [draft, setDraft] = useState<Record<number, { held: string; attended: string }>>({});
+
+  function value(e: Enrollment, k: "held" | "attended") {
+    return draft[e.enrollment_id]?.[k] ?? String(k === "held" ? e.classes_held : e.classes_attended);
+  }
+
+  function edit(e: Enrollment, k: "held" | "attended", v: string) {
+    setDraft((d) => ({
+      ...d,
+      [e.enrollment_id]: { held: value(e, "held"), attended: value(e, "attended"), [k]: v },
+    }));
+  }
+
+  function save(e: Enrollment) {
+    start(async () => {
+      const res = await saveAttendance({
+        enrollmentId: e.enrollment_id,
+        held: Number(value(e, "held")),
+        attended: Number(value(e, "attended")),
+      });
+      setResult(res);
+      if (res.ok) {
+        setDraft((d) => {
+          const next = { ...d };
+          delete next[e.enrollment_id];
+          return next;
+        });
+        router.refresh();
+      }
+    });
+  }
+
+  return (
+    <Card className="p-5">
+      <SectionHead
+        eyebrow="Enrollment"
+        title="Courses & attendance"
+        desc="Copy your numbers from VTOP. When a doctor grants medical leave, the database raises one condonation request per course listed here, and an approval credits the days back."
+      />
+      {!enrollments.length ? (
+        <Empty>Your school has no courses on record yet, so there is nothing to track.</Empty>
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <Th>Course</Th>
+              <Th>Faculty</Th>
+              <Th className="text-right">Held</Th>
+              <Th className="text-right">Attended</Th>
+              <Th className="text-right">Condoned</Th>
+              <Th className="text-right">%</Th>
+              <Th />
+            </tr>
+          </thead>
+          <tbody>
+            {enrollments.map((e) => {
+              const dirty = Boolean(draft[e.enrollment_id]);
+              const pct = e.attendance_pct;
+              return (
+                <tr key={e.enrollment_id}>
+                  <Td>
+                    <span className="mono text-[12px]">{e.course_code}</span>{" "}
+                    <span className="text-ink-soft">{e.course_title}</span>
+                  </Td>
+                  <Td className="text-ink-soft">{e.faculty_name}</Td>
+                  <Td className="text-right">
+                    <input
+                      type="number"
+                      min={0}
+                      value={value(e, "held")}
+                      onChange={(ev) => edit(e, "held", ev.target.value)}
+                      className="inp mono w-20 text-right"
+                    />
+                  </Td>
+                  <Td className="text-right">
+                    <input
+                      type="number"
+                      min={0}
+                      value={value(e, "attended")}
+                      onChange={(ev) => edit(e, "attended", ev.target.value)}
+                      className="inp mono w-20 text-right"
+                    />
+                  </Td>
+                  <Td className="mono text-right">{e.condoned_days}</Td>
+                  <Td
+                    className={`mono text-right ${
+                      pct === null ? "text-ink-mute" : pct < 75 ? "text-danger" : pct < 80 ? "text-warn" : "text-ok"
+                    }`}
+                  >
+                    {pct === null ? "—" : pct.toFixed(1)}
+                  </Td>
+                  <Td className="text-right">
+                    <button
+                      onClick={() => save(e)}
+                      disabled={!dirty || pending}
+                      className="label rounded border border-line px-2.5 py-1 text-brand-deep transition hover:bg-brand-wash disabled:opacity-30"
+                    >
+                      Save
+                    </button>
+                  </Td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
+      )}
+      <Feedback result={result} />
+    </Card>
   );
 }
 
 /* ==================================================================== profile */
 
-function ProfileTab({
+/**
+ * The student's own details. The same form registers a new account (with a
+ * password) and, once signed in, edits the profile.
+ */
+export function StudentProfileForm({
   profile,
   campusList,
   deptList,
+  register = false,
 }: {
   profile: StudentProfile | null;
   campusList: { campus_id: number; code: string; name: string }[];
   deptList: { dept_id: number; campus_id: number; code: string; name: string }[];
+  register?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -235,11 +340,10 @@ function ProfileTab({
 
   function submit(formData: FormData) {
     start(async () => {
-      const res = await saveProfile(formData);
+      const res = register ? await registerStudent(formData) : await saveProfile(formData);
       setResult(res);
       if (res.ok) {
-        const reg = String(formData.get("reg_no") ?? "").toUpperCase();
-        router.push(`/student?reg=${encodeURIComponent(reg)}`);
+        if (register) router.push("/student");
         router.refresh();
       }
     });
@@ -249,17 +353,18 @@ function ProfileTab({
     <form action={submit} className="space-y-5">
       <Card className="p-5">
         <SectionHead
-          eyebrow="Step 1"
+          eyebrow={register ? "New student · step 1" : "Profile"}
           title="Personal details"
-          desc="Type your own details — nothing here is picked from a list of existing students. These fields become one row in the student relation."
+          desc="These fields become one row in the student relation."
         />
         <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
-          <Field label="Registration number" hint="e.g. 25BCE2256" required>
+          <Field label="Registration number" hint="as on your ID card" required>
             <input
               name="reg_no"
               defaultValue={profile?.reg_no ?? ""}
-              placeholder="25BCE2256"
-              className="inp mono uppercase"
+              readOnly={!register}
+              placeholder="YYBRN0000"
+              className="inp mono uppercase read-only:bg-sunk read-only:text-ink-mute"
               required
             />
           </Field>
@@ -267,7 +372,7 @@ function ProfileTab({
             <input
               name="name"
               defaultValue={profile?.name ?? ""}
-              placeholder="Param Vansh Singh"
+              placeholder="Your full name"
               className="inp"
               required
             />
@@ -277,7 +382,7 @@ function ProfileTab({
               type="email"
               name="email"
               defaultValue={profile?.email ?? ""}
-              placeholder="name.year@vitstudent.ac.in"
+              placeholder="you@vitstudent.ac.in"
               className="inp"
               required
             />
@@ -286,7 +391,7 @@ function ProfileTab({
             <input
               name="phone"
               defaultValue={profile?.phone ?? ""}
-              placeholder="9812345601"
+              placeholder="10-digit mobile"
               inputMode="numeric"
               className="inp"
               required
@@ -310,7 +415,7 @@ function ProfileTab({
             <input
               name="blood_group"
               defaultValue={profile?.blood_group ?? ""}
-              placeholder="B+"
+              placeholder="e.g. O+"
               className="inp"
             />
           </Field>
@@ -330,7 +435,7 @@ function ProfileTab({
               name="campus"
               list="campus-options"
               defaultValue={profile?.campus_name ?? ""}
-              placeholder="VIT Vellore"
+              placeholder="Start typing your campus"
               className="inp"
               required
             />
@@ -347,7 +452,7 @@ function ProfileTab({
               name="department"
               list="dept-options"
               defaultValue={profile?.dept_name ?? ""}
-              placeholder="School of Computer Science and Engineering"
+              placeholder="Start typing your school"
               className="inp"
               required
             />
@@ -363,19 +468,19 @@ function ProfileTab({
             <input
               name="hostel_block"
               defaultValue={profile?.hostel_block ?? ""}
-              placeholder="M-Block"
+              placeholder="Block"
               className="inp"
             />
           </Field>
           <Field label="Room number">
-            <input name="room_no" defaultValue={profile?.room_no ?? ""} placeholder="412" className="inp" />
+            <input name="room_no" defaultValue={profile?.room_no ?? ""} placeholder="Room" className="inp" />
           </Field>
         </div>
       </Card>
 
       <Card className="p-5">
         <SectionHead
-          eyebrow="Step 2 · the escalation chain"
+          eyebrow={register ? "Step 2 · the escalation chain" : "The escalation chain"}
           title="Your proctor and Head of Department"
           desc="Fill these in now. If a doctor ever recommends medical leave, the generated letter is delivered to exactly these two people by a database trigger — you never have to forward it yourself."
         />
@@ -384,7 +489,7 @@ function ProfileTab({
             <input
               name="proctor_name"
               defaultValue={profile?.proctor_name ?? ""}
-              placeholder="Dr. Anitha Rajan"
+              placeholder="Proctor's full name"
               className="inp"
             />
           </Field>
@@ -393,7 +498,7 @@ function ProfileTab({
               type="email"
               name="proctor_email"
               defaultValue={profile?.proctor_email ?? ""}
-              placeholder="anitha.rajan@vit.ac.in"
+              placeholder="proctor@vit.ac.in"
               className="inp"
             />
           </Field>
@@ -401,7 +506,7 @@ function ProfileTab({
             <input
               name="proctor_phone"
               defaultValue={profile?.proctor_phone ?? ""}
-              placeholder="9840011001"
+              placeholder="10-digit mobile"
               className="inp"
             />
           </Field>
@@ -409,7 +514,7 @@ function ProfileTab({
             <input
               name="hod_name"
               defaultValue={profile?.hod_name ?? ""}
-              placeholder="Dr. Ramesh Kumar"
+              placeholder="HOD's full name"
               className="inp"
             />
           </Field>
@@ -418,11 +523,32 @@ function ProfileTab({
               type="email"
               name="hod_email"
               defaultValue={profile?.hod_email ?? ""}
-              placeholder="ramesh.kumar@vit.ac.in"
+              placeholder="hod@vit.ac.in"
               className="inp"
             />
           </Field>
         </div>
+
+        {register && (
+          <div className="mt-5 grid gap-3.5 border-t border-line pt-5 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Password" hint="at least 6 characters" required>
+              <input type="password" name="password" minLength={6} autoComplete="new-password" className="inp" required />
+            </Field>
+            <Field label="Confirm password" required>
+              <input
+                type="password"
+                name="password_confirm"
+                minLength={6}
+                autoComplete="new-password"
+                className="inp"
+                required
+              />
+            </Field>
+            <p className="self-end pb-2 text-[12px] text-ink-mute">
+              You will sign in with your registration number and this password.
+            </p>
+          </div>
+        )}
 
         <div className="mt-5 flex flex-wrap items-center gap-3">
           <button
@@ -431,7 +557,7 @@ function ProfileTab({
             className="flex items-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-brand-deep disabled:opacity-60"
           >
             {pending ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-            {profile ? "Save profile" : "Create my profile"}
+            {register ? "Create my account" : "Save profile"}
           </button>
           <p className="text-[11.5px] text-ink-mute">
             Writes one row to <span className="mono">student</span> and keeps your default{" "}
@@ -699,13 +825,19 @@ function BookTab({
 
 /* ======================================================================= care */
 
-function CareTab({ appointments }: { appointments: CareAppointment[] }) {
-  const [openId, setOpenId] = useState<number | null>(
-    appointments.find((a) => a.status === "BOOKED" && a.mode === "VIDEO")?.appointment_id ?? null,
-  );
+function CareTab({ appointments, onBook }: { appointments: CareAppointment[]; onBook: () => void }) {
+  const [openId, setOpenId] = useState<number | null>(null);
 
   if (!appointments.length) {
-    return <Empty>You have no appointments yet. Book one from the previous tab.</Empty>;
+    return (
+      <Empty>
+        You have no appointments yet.{" "}
+        <button onClick={onBook} className="font-medium text-brand-deep underline underline-offset-2">
+          Book a consultation
+        </button>
+        .
+      </Empty>
+    );
   }
 
   return (
@@ -713,7 +845,7 @@ function CareTab({ appointments }: { appointments: CareAppointment[] }) {
       <SectionHead
         eyebrow="My Care"
         title="Appointments and consultations"
-        desc="Join the video room for any booked video consultation — the doctor sees the same room code."
+        desc="When your doctor opens the consultation they call you here — the call rings on whatever page you are on. You can also join the room yourself."
       />
       {appointments.map((a) => {
         const open = openId === a.appointment_id;
@@ -731,7 +863,10 @@ function CareTab({ appointments }: { appointments: CareAppointment[] }) {
               <Chip tone={a.status === "COMPLETED" ? "ok" : a.status === "BOOKED" ? "info" : "neutral"}>
                 {a.status}
               </Chip>
-              {a.mode === "VIDEO" && a.status !== "CANCELLED" && (
+              {a.mode === "VIDEO" && a.status !== "CANCELLED" && !a.video_room_code && a.status === "BOOKED" && (
+                <span className="label text-ink-mute">Waiting for the doctor to open the room</span>
+              )}
+              {a.mode === "VIDEO" && a.status !== "CANCELLED" && a.video_room_code && (
                 <button
                   onClick={() => setOpenId(open ? null : a.appointment_id)}
                   className="flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-[11.5px] font-semibold text-white transition hover:bg-brand-deep"
@@ -755,11 +890,10 @@ function CareTab({ appointments }: { appointments: CareAppointment[] }) {
               </div>
             )}
 
-            {open && a.mode === "VIDEO" && (
+            {open && a.mode === "VIDEO" && a.video_room_code && (
               <div className="p-4">
                 <VideoConsole
-                  room={a.video_room_code ?? `VITC-${String(a.appointment_id).padStart(4, "0")}`}
-                  role="STUDENT"
+                  room={a.video_room_code}
                   counterpart={a.doctor_name}
                   subtitle={`Appointment #${a.appointment_id} · ${whenLabel(a.slot_date)} ${a.slot_time}`}
                 />
@@ -1129,6 +1263,7 @@ const NOTICE_ICON: Record<string, typeof Bell> = {
   ORDER: Package,
   LEAVE: FileText,
   ALERT: AlertTriangle,
+  CALL: Video,
 };
 
 const NOTICE_TONE: Record<string, Tone> = {
@@ -1137,6 +1272,7 @@ const NOTICE_TONE: Record<string, Tone> = {
   ORDER: "orange",
   LEAVE: "brand",
   ALERT: "danger",
+  CALL: "warn",
 };
 
 function InboxTab({ regNo, notices }: { regNo: string; notices: Notice[] }) {

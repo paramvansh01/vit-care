@@ -7,7 +7,7 @@ export default function ErDiagramPage() {
   const model = introspect();
 
   return (
-    <div className="flex h-[calc(100vh-56px)] min-h-0 flex-col">
+    <div className="flex h-[calc(100vh-138px)] min-h-[620px] flex-col">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-line bg-surface px-5 py-3">
         <div>
           <p className="eyebrow">Entity–Relationship Model</p>

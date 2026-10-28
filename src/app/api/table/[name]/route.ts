@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { all } from "@/lib/db";
+import { all, redactRow } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,7 @@ export async function GET(
     return NextResponse.json({ error: `Unknown table: ${name}` }, { status: 404 });
   }
 
-  const rows = all(`SELECT * FROM "${name}" LIMIT ?`, limit);
+  const rows = all(`SELECT * FROM "${name}" LIMIT ?`, limit).map(redactRow);
   const total = all<{ n: number }>(`SELECT COUNT(*) AS n FROM "${name}"`)[0]?.n ?? 0;
 
   return NextResponse.json({ name, total, rows });

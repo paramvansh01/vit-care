@@ -1,5 +1,7 @@
+import { redirect } from "next/navigation";
 import { Page } from "@/components/ui";
 import { DoctorConsole } from "@/components/doctor-console";
+import { requireUser } from "@/lib/auth";
 import {
   allDrugs,
   allLeaveDocs,
@@ -13,17 +15,12 @@ import type { StudentProfile } from "@/lib/care";
 
 export const dynamic = "force-dynamic";
 
-export default async function DoctorPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ id?: string }>;
-}) {
-  const { id } = await searchParams;
-  const roster = doctorRoster();
-  const doctorId = Number(id) || roster[0]?.doctor_id;
-  const doctor = roster.find((d) => d.doctor_id === doctorId) ?? roster[0] ?? null;
+export default async function DoctorPage() {
+  const user = await requireUser("DOCTOR", "/doctor");
+  const doctor = doctorRoster().find((d) => d.doctor_id === Number(user.linked_ref));
+  if (!doctor) redirect("/");
 
-  const board = doctor ? doctorBoard(doctor.doctor_id) : [];
+  const board = doctorBoard(doctor.doctor_id);
 
   // The panel shows each patient's escalation chain, so their profile travels
   // with the queue row.
@@ -33,7 +30,7 @@ export default async function DoctorPage({
     if (p) patients[reg] = p;
   }
 
-  const leaveDocs = allLeaveDocs();
+  const leaveDocs = allLeaveDocs().filter((d) => board.some((a) => a.document_id === d.document_id));
   const recipientsByDoc = Object.fromEntries(
     leaveDocs.map((d) => [d.document_id, recipientsFor(d.document_id)]),
   );
@@ -42,8 +39,7 @@ export default async function DoctorPage({
     <Page wide>
       <DoctorConsole
         doctor={doctor}
-        roster={roster}
-        stats={doctor ? doctorStats(doctor.doctor_id) : { waiting: 0, seen: 0, urgent: 0, leaves: 0 }}
+        stats={doctorStats(doctor.doctor_id)}
         board={board}
         drugs={allDrugs()}
         patients={patients}

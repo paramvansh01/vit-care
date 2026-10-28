@@ -8,7 +8,9 @@ import {
   KeyRound,
   Link2,
   Maximize2,
+  Minimize2,
   Minus,
+  Scan,
   Play,
   Plus,
   Shuffle,
@@ -318,10 +320,66 @@ export function ErDiagram({ model }: { model: ErModel }) {
 
   const selectedTable = selected ? byName.get(selected) ?? null : null;
 
+  /* ---------------------------------------------------------- fullscreen */
+
+  // Real browser fullscreen where it is allowed; otherwise the canvas is
+  // pinned over the whole window. Either way the layout is re-fitted to the
+  // new size once it has settled.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [full, setFull] = useState(false);
+
+  useEffect(() => {
+    function sync() {
+      setFull(document.fullscreenElement === rootRef.current);
+    }
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  useEffect(() => {
+    const id = setTimeout(fit, 120);
+    if (!full) return () => clearTimeout(id);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !document.fullscreenElement) setFull(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(id);
+      window.removeEventListener("keydown", onKey);
+    };
+    // re-fit only when the size mode flips
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [full]);
+
+  async function toggleFull() {
+    const el = rootRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
+      return;
+    }
+    if (full) {
+      setFull(false);
+      return;
+    }
+    if (document.fullscreenEnabled && el.requestFullscreen) {
+      try {
+        await el.requestFullscreen();
+        return;
+      } catch {
+        /* blocked (e.g. inside an iframe) - fall back to the pinned overlay */
+      }
+    }
+    setFull(true);
+  }
+
   /* -------------------------------------------------------------- render */
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      ref={rootRef}
+      className={`flex min-h-0 flex-1 flex-col bg-surface ${full ? "fixed inset-0 z-50 h-screen w-screen" : ""}`}
+    >
       <Toolbar
         layout={layout}
         setLayout={setLayout}
@@ -332,6 +390,8 @@ export function ErDiagram({ model }: { model: ErModel }) {
         activeModules={activeModules}
         toggleModule={toggleModule}
         onFit={fit}
+        full={full}
+        onToggleFull={toggleFull}
         onZoomIn={() => zoomBy(1.22)}
         onZoomOut={() => zoomBy(1 / 1.22)}
         onShuffle={() => {
@@ -648,6 +708,8 @@ function Toolbar(props: {
   activeModules: Set<ModuleKey>;
   toggleModule: (k: ModuleKey) => void;
   onFit: () => void;
+  full: boolean;
+  onToggleFull: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onShuffle: () => void;
@@ -731,8 +793,11 @@ function Toolbar(props: {
         <IconBtn onClick={props.onZoomIn} title="Zoom in">
           <Plus size={13} />
         </IconBtn>
-        <IconBtn onClick={props.onFit} title="Fit to screen">
-          <Maximize2 size={13} />
+        <IconBtn onClick={props.onFit} title="Fit the diagram to the view">
+          <Scan size={13} />
+        </IconBtn>
+        <IconBtn onClick={props.onToggleFull} title={props.full ? "Exit full screen (Esc)" : "Full screen"}>
+          {props.full ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
         </IconBtn>
       </div>
     </div>

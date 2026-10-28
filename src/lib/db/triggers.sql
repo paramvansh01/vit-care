@@ -436,6 +436,35 @@ BEGIN
           'Rx #' || NEW.prescription_id || ' dispensed — its lines were retired from the cart');
 END;
 
+-- ---------------------------------------------------------------------------
+-- T18 : MISSED-CALL NOTICE
+-- A call that rang out without an answer lands in the student's inbox, so a
+-- doctor's attempt to reach them is never silently lost.
+-- ---------------------------------------------------------------------------
+CREATE TRIGGER trg_notify_missed_call
+AFTER UPDATE OF status ON call_session
+FOR EACH ROW
+WHEN NEW.status = 'MISSED' AND OLD.status = 'RINGING'
+BEGIN
+  INSERT INTO notification (reg_no, kind, title, body, ref_table, ref_id)
+  SELECT callee.linked_ref,
+         'CALL',
+         'Missed video call from ' || COALESCE(caller.display_name, 'VIT-Care'),
+         'Room ' || NEW.room_code || ' rang at ' || COALESCE(NEW.rang_at, NEW.created_at) ||
+           ' UTC. Open Calls to join the room or call back.',
+         'call_session',
+         NEW.call_id
+    FROM app_user callee
+    JOIN app_role r ON r.role_id = callee.role_id AND r.role_name = 'STUDENT'
+    LEFT JOIN app_user caller ON caller.user_id = NEW.caller_id
+   WHERE callee.user_id = NEW.callee_id
+     AND EXISTS (SELECT 1 FROM student s WHERE s.reg_no = callee.linked_ref);
+
+  INSERT INTO trigger_log (trigger_name, table_name, event, message)
+  VALUES ('trg_notify_missed_call', 'notification', 'AFTER UPDATE',
+          'Call ' || NEW.room_code || ' rang out unanswered - missed-call notice raised');
+END;
+
 -- ============================================================================
 -- ROLE-BASED ACCESS CONTROL VIEWS  (Objective: DB-level confidentiality)
 -- ============================================================================

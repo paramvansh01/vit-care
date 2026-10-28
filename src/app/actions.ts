@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { all, db, one, run, scalar } from "@/lib/db";
+import { all, db, one, redactRow, run, scalar } from "@/lib/db";
 
 export type ActionResult = {
   ok: boolean;
@@ -294,6 +294,8 @@ export async function acknowledgeAlert(alertId: number): Promise<ActionResult> {
 
 const WRITE = /\b(insert|update|delete|drop|alter|create|replace|attach|detach|vacuum|pragma)\b/i;
 
+const SECRET = /\b(password_hash|token)\b/i;
+
 export async function runQuery(sql: string): Promise<{
   ok: boolean;
   columns: string[];
@@ -315,9 +317,20 @@ export async function runQuery(sql: string): Promise<{
     };
   }
 
+  if (SECRET.test(trimmed)) {
+    return {
+      ok: false,
+      columns: [],
+      rows: [],
+      error:
+        "Password hashes and session tokens are not readable from the console. SELECT * still works — those two columns come back redacted.",
+      ms: 0,
+    };
+  }
+
   const started = performance.now();
   try {
-    const result = all<Record<string, unknown>>(trimmed);
+    const result = all<Record<string, unknown>>(trimmed).map(redactRow);
     const ms = performance.now() - started;
     const columns = result.length ? Object.keys(result[0]) : [];
     let plan: string[] = [];

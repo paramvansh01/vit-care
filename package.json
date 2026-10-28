@@ -4,9 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "lan": "node server.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lan:prod": "next build && node server.mjs --prod",
+    "lint": "eslint",
+    "trust": "node scripts/trust.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.46.0",
@@ -21,6 +24,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
+    "node-forge": "^1.4.2",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

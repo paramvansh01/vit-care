@@ -47,15 +47,17 @@ export function Card({
 
 /* ------------------------------------------------------------------- atoms */
 
+// One family of tints drawn from the mint palette, plus amber and coral for
+// the two states that must stand out.
 const CHIP_TONES: Record<string, string> = {
   neutral: "bg-sunk text-ink-soft border-line",
-  brand: "bg-brand-wash text-brand-deep border-teal-200",
-  ok: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  warn: "bg-amber-50 text-amber-700 border-amber-200",
-  danger: "bg-rose-50 text-rose-700 border-rose-200",
-  info: "bg-blue-50 text-blue-700 border-blue-200",
-  violet: "bg-violet-50 text-violet-700 border-violet-200",
-  orange: "bg-orange-50 text-orange-700 border-orange-200",
+  brand: "bg-brand-wash text-brand-deep border-brand-tint",
+  ok: "bg-brand text-white border-brand",
+  warn: "bg-warn-wash text-warn border-warn/25",
+  danger: "bg-danger-wash text-danger border-danger/25",
+  info: "bg-brand-wash text-brand-deep border-brand-tint",
+  violet: "bg-[#eef1f4] text-[#4b5d70] border-[#d8dfe6]",
+  orange: "bg-warn-wash text-warn border-warn/25",
 };
 
 export type Tone = keyof typeof CHIP_TONES;
@@ -88,12 +90,12 @@ export function Stat({
   const accent: Record<string, string> = {
     neutral: "text-ink",
     brand: "text-brand-deep",
-    ok: "text-emerald-700",
-    warn: "text-amber-700",
-    danger: "text-rose-700",
-    info: "text-blue-700",
-    violet: "text-violet-700",
-    orange: "text-orange-700",
+    ok: "text-brand-deep",
+    warn: "text-warn",
+    danger: "text-danger",
+    info: "text-ink",
+    violet: "text-ink",
+    orange: "text-warn",
   };
   return (
     <div className="card card-lift p-4">
@@ -101,7 +103,7 @@ export function Stat({
         <p className="eyebrow">{label}</p>
         {icon && <span className="text-ink-mute">{icon}</span>}
       </div>
-      <p className={`mt-2 text-[27px] font-semibold leading-none tracking-tight ${accent[tone]}`}>{value}</p>
+      <p className={`mt-2 font-serif text-[30px] font-semibold leading-none ${accent[tone]}`}>{value}</p>
       {hint && <p className="mt-1.5 text-[11.5px] leading-snug text-ink-mute">{hint}</p>}
     </div>
   );

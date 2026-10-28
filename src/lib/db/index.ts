@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { hashPassword } from "@/lib/password";
 
 export type Row = Record<string, unknown>;
 
@@ -36,13 +37,52 @@ function bootstrap(): DatabaseSync {
   const built = database
     .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'campus'")
     .get() as { n: number };
+  const version = (database.prepare("PRAGMA user_version").get() as { user_version: number })
+    .user_version;
 
-  if (built.n === 0) {
-    database.exec(readSql("schema.sql"));
-    database.exec(readSql("triggers.sql"));
-    database.exec(readSql("seed.sql"));
-  }
+  // The file is generated, never authored: one built from an older schema is
+  // simply rebuilt rather than migrated.
+  if (built.n === 0) build(database, false);
+  else if (version < SCHEMA_VERSION) rebuild(database, false);
   return database;
+}
+
+/** Bumped whenever schema.sql or triggers.sql changes shape. */
+const SCHEMA_VERSION = 3;
+
+/** Password every account in sample.sql signs in with. */
+export const SAMPLE_PASSWORD = "vitcare";
+
+function build(database: DatabaseSync, withSample: boolean) {
+  database.exec(readSql("schema.sql"));
+  database.exec(readSql("triggers.sql"));
+  database.exec(readSql("reference.sql"));
+  if (withSample) {
+    database.exec(readSql("sample.sql"));
+    const hash = hashPassword(SAMPLE_PASSWORD);
+    database.prepare("UPDATE app_user SET password_hash = ? WHERE password_hash IS NULL").run(hash);
+  }
+  database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
+function rebuild(conn: DatabaseSync, withSample: boolean) {
+  conn.exec("PRAGMA foreign_keys = OFF;");
+  const objects = conn
+    .prepare(
+      `SELECT type, name FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY CASE type
+                   WHEN 'trigger' THEN 0 WHEN 'view' THEN 1
+                   WHEN 'index' THEN 2 ELSE 3 END`,
+    )
+    .all() as { type: string; name: string }[];
+
+  for (const o of objects) {
+    if (o.type === "index" && o.name.startsWith("sqlite_autoindex")) continue;
+    conn.exec(`DROP ${o.type.toUpperCase()} IF EXISTS "${o.name}"`);
+  }
+  build(conn, withSample);
+  conn.exec("PRAGMA foreign_keys = ON;");
 }
 
 function connection(): DatabaseSync {
@@ -61,28 +101,12 @@ export const db: DatabaseSync = new Proxy({} as DatabaseSync, {
   },
 });
 
-/** Drop every object and rebuild from schema + triggers + seed. */
-export function resetDatabase() {
-  const conn = connection();
-  conn.exec("PRAGMA foreign_keys = OFF;");
-  const objects = conn
-    .prepare(
-      `SELECT type, name FROM sqlite_master
-        WHERE name NOT LIKE 'sqlite_%'
-        ORDER BY CASE type
-                   WHEN 'trigger' THEN 0 WHEN 'view' THEN 1
-                   WHEN 'index' THEN 2 ELSE 3 END`,
-    )
-    .all() as { type: string; name: string }[];
-
-  for (const o of objects) {
-    if (o.type === "index" && o.name.startsWith("sqlite_autoindex")) continue;
-    conn.exec(`DROP ${o.type.toUpperCase()} IF EXISTS "${o.name}"`);
-  }
-  conn.exec(readSql("schema.sql"));
-  conn.exec(readSql("triggers.sql"));
-  conn.exec(readSql("seed.sql"));
-  conn.exec("PRAGMA foreign_keys = ON;");
+/**
+ * Drop every object and rebuild from schema + triggers + reference data.
+ * With `withSample`, the demo people and history in sample.sql come too.
+ */
+export function resetDatabase(withSample = false) {
+  rebuild(connection(), withSample);
 }
 
 // node:sqlite hands back null-prototype objects, which React refuses to send
@@ -109,4 +133,17 @@ export function run(sql: string, ...params: unknown[]) {
 export function scalar<T = number>(sql: string, ...params: unknown[]): T {
   const row = one<Record<string, T>>(sql, ...params);
   return row ? (Object.values(row)[0] as T) : (0 as unknown as T);
+}
+
+/* ----------------------------------------------------------------- secrets */
+
+/** Columns whose values never leave the server: password hashes and session tokens. */
+export const SECRET_COLUMNS = new Set(["password_hash", "token"]);
+
+export function redactRow<T extends Record<string, unknown>>(row: T): T {
+  const out: Record<string, unknown> = { ...row };
+  for (const key of Object.keys(out)) {
+    if (SECRET_COLUMNS.has(key.toLowerCase()) && out[key] != null) out[key] = "•••••• (redacted)";
+  }
+  return out as T;
 }

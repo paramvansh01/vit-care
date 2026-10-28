@@ -49,7 +49,7 @@ export default function DashboardPage() {
         <Stat
           label="Students"
           value={stats.students}
-          hint="across 4 campuses"
+          hint={`across ${campuses.filter((c) => c.students > 0).length} campus(es)`}
           icon={<Users size={14} />}
         />
         <Stat
