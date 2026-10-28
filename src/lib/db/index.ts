@@ -48,7 +48,7 @@ function bootstrap(): DatabaseSync {
 }
 
 /** Bumped whenever schema.sql or triggers.sql changes shape. */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /** Password every account in sample.sql signs in with. */
 export const SAMPLE_PASSWORD = "vitcare";

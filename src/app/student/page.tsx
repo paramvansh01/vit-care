@@ -3,6 +3,7 @@ import { Page } from "@/components/ui";
 import { StudentPortal } from "@/components/student-portal";
 import { doctors, symptoms } from "@/lib/queries";
 import { requireUser } from "@/lib/auth";
+import { razorpayKeyId, razorpayTestMode } from "@/lib/razorpay";
 import {
   appointmentsFor,
   bookableSlots,
@@ -54,6 +55,7 @@ export default async function StudentPage() {
         deptList={departments()}
         pharmacy={primaryPharmacy(me.campus_id) ?? null}
         enrollments={enrollmentsFor(me.reg_no)}
+        onlinePayment={{ enabled: Boolean(razorpayKeyId()), testMode: razorpayTestMode() }}
       />
     </Page>
   );

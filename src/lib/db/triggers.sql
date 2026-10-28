@@ -465,6 +465,22 @@ BEGIN
           'Call ' || NEW.room_code || ' rang out unanswered - missed-call notice raised');
 END;
 
+-- ---------------------------------------------------------------------------
+-- T19 : PAYMENT LEDGER
+-- A verified online payment is logged against the order it paid for, so the
+-- event stream shows money moving alongside the stock it bought.
+-- ---------------------------------------------------------------------------
+CREATE TRIGGER trg_payment_captured
+AFTER UPDATE OF status ON payment
+FOR EACH ROW
+WHEN NEW.status = 'PAID' AND OLD.status <> 'PAID'
+BEGIN
+  INSERT INTO trigger_log (trigger_name, table_name, event, message)
+  VALUES ('trg_payment_captured', 'payment', 'AFTER UPDATE',
+          'Razorpay ' || COALESCE(NEW.gateway_payment_id, '?') || ' captured Rs ' ||
+          printf('%.2f', NEW.amount_paise / 100.0) || ' for order #' || COALESCE(NEW.order_id, '?'));
+END;
+
 -- ============================================================================
 -- ROLE-BASED ACCESS CONTROL VIEWS  (Objective: DB-level confidentiality)
 -- ============================================================================

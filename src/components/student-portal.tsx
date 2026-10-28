@@ -24,13 +24,16 @@ import {
 import {
   addToCart,
   bookVisit,
+  abandonOnlinePayment,
   checkout,
+  completeOnlinePayment,
   markAllRead,
   registerStudent,
   removeCartLine,
   saveAttendance,
   saveProfile,
   setCartQty,
+  startOnlinePayment,
 } from "@/app/care-actions";
 import type { ActionResult } from "@/app/actions";
 import type {
@@ -75,6 +78,7 @@ export function StudentPortal({
   deptList,
   pharmacy,
   enrollments,
+  onlinePayment,
 }: {
   profile: StudentProfile;
   doctors: {
@@ -100,6 +104,7 @@ export function StudentPortal({
   deptList: { dept_id: number; campus_id: number; code: string; name: string }[];
   pharmacy: { name: string; location: string } | null;
   enrollments: Enrollment[];
+  onlinePayment: { enabled: boolean; testMode: boolean };
 }) {
   const [tab, setTab] = useState<Tab>(appointments.length ? "care" : "book");
 
@@ -183,6 +188,7 @@ export function StudentPortal({
           orders={orders}
           pharmacy={pharmacy}
           rxCount={rxCount}
+          onlinePayment={onlinePayment}
         />
       )}
       {tab === "documents" && <DocumentsTab docs={docs} recipientsByDoc={recipientsByDoc} />}
@@ -926,6 +932,7 @@ function PharmacyTab({
   orders,
   pharmacy,
   rxCount,
+  onlinePayment,
 }: {
   regNo: string;
   cart: CartLine[];
@@ -933,6 +940,7 @@ function PharmacyTab({
   orders: StudentOrder[];
   pharmacy: { name: string; location: string } | null;
   rxCount: number;
+  onlinePayment: { enabled: boolean; testMode: boolean };
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -950,6 +958,64 @@ function PharmacyTab({
 
   const chosenLines = cart.filter((c) => selected.has(c.cart_item_id));
   const total = chosenLines.reduce((sum, c) => sum + c.line_total, 0);
+
+  /**
+   * Razorpay: the server fixes the amount and opens the gateway order, the
+   * gateway's window takes the payment, and the server verifies the signature
+   * before it writes the order. Closing the window just records the attempt.
+   */
+  function payOnline() {
+    const cartItemIds = [...selected];
+    setResult(null);
+    start(async () => {
+      const begin = await startOnlinePayment({ regNo, cartItemIds });
+      if (!begin.ok) {
+        setResult(begin);
+        return;
+      }
+      if (!(await loadRazorpay())) {
+        await abandonOnlinePayment({ regNo, gatewayOrderId: begin.gatewayOrderId, reason: "checkout.js unreachable" });
+        setResult({ ok: false, message: "Could not load Razorpay's checkout — is this device online?" });
+        return;
+      }
+
+      let lastFailure = "";
+      const outcome = await new Promise<RazorpaySuccess | null>((resolve) => {
+        const rzp = new window.Razorpay!({
+          key: begin.keyId,
+          amount: begin.amountPaise,
+          currency: begin.currency,
+          order_id: begin.gatewayOrderId,
+          name: "VIT-Care Pharmacy",
+          description: `${cartItemIds.length} item(s) to your hostel room`,
+          prefill: begin.prefill,
+          theme: { color: "#2a9d8f" },
+          handler: (response) => resolve(response),
+          modal: { ondismiss: () => resolve(null), confirm_close: true },
+        });
+        // A failed attempt keeps the window open so the student can retry.
+        rzp.on("payment.failed", (response) => {
+          lastFailure = response.error?.description ?? "Payment failed";
+          setResult({ ok: false, message: `${lastFailure} — try again, or close the window.` });
+        });
+        rzp.open();
+      });
+
+      if (!outcome) {
+        await abandonOnlinePayment({
+          regNo,
+          gatewayOrderId: begin.gatewayOrderId,
+          reason: lastFailure || "window closed",
+        });
+        setResult({ ok: false, message: lastFailure || "Payment window closed — nothing was charged." });
+        return;
+      }
+
+      const res = await completeOnlinePayment({ regNo, cartItemIds, ...outcome });
+      setResult(res);
+      router.refresh();
+    });
+  }
 
   function act(fn: () => Promise<ActionResult>) {
     start(async () => {
@@ -1130,24 +1196,43 @@ function PharmacyTab({
             value={payment}
             onChange={setPayment}
             options={[
-              { value: "COD", label: "Cash" },
-              { value: "UPI", label: "UPI" },
-              { value: "CARD", label: "Card" },
+              { value: "COD", label: "Cash on delivery" },
+              ...(onlinePayment.enabled ? [{ value: "ONLINE", label: "Pay online · Razorpay" }] : []),
             ]}
           />
 
-          <button
-            onClick={() =>
-              act(() =>
-                checkout({ regNo, paymentMode: payment, cartItemIds: [...selected] }),
-              )
-            }
-            disabled={pending || !chosenLines.length}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-brand-deep disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {pending ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
-            Confirm and place order
-          </button>
+          {payment === "ONLINE" ? (
+            <>
+              <button
+                onClick={payOnline}
+                disabled={pending || !chosenLines.length}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-brand-deep disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pending ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+                Pay {money(total)} with Razorpay
+              </button>
+              <p className="mt-2 rounded border border-dashed border-line-strong px-2.5 py-2 text-[11.5px] leading-relaxed text-ink-soft">
+                UPI, cards and netbanking open in Razorpay&apos;s own window.
+                {onlinePayment.testMode && (
+                  <>
+                    {" "}
+                    <strong className="text-ink">Test mode</strong> — no real money moves. Use card{" "}
+                    <span className="mono">5267 3181 8797 5449</span>, any future expiry, any CVV and any OTP
+                    (e.g. <span className="mono">123456</span>).
+                  </>
+                )}
+              </p>
+            </>
+          ) : (
+            <button
+              onClick={() => act(() => checkout({ regNo, paymentMode: "COD", cartItemIds: [...selected] }))}
+              disabled={pending || !chosenLines.length}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-brand-deep disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {pending ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
+              Confirm and place order
+            </button>
+          )}
           <p className="mt-2 text-[11px] leading-relaxed text-ink-mute">
             A stock guard refuses any line that exceeds on-hand inventory, then{" "}
             <span className="mono">trg_stock_deduct</span> deducts stock and rolls the total up.
@@ -1175,7 +1260,7 @@ function PharmacyTab({
                       Order #{o.order_id} · <span className="mono">{money(o.total_amount)}</span>
                     </p>
                     <p className="truncate text-[11px] text-ink-mute">
-                      {o.lines} item(s) · {o.pharmacy_name} · {o.placed_at.slice(0, 16)}
+                      {o.lines} item(s) · {o.payment_mode === "RAZORPAY" ? "paid online" : o.payment_mode === "COD" ? "cash on delivery" : o.payment_mode} · {o.placed_at.slice(0, 16)}
                     </p>
                   </div>
                   <Chip tone={ORDER_TONE[o.status] ?? "neutral"}>{o.status.replace(/_/g, " ")}</Chip>
@@ -1368,4 +1453,47 @@ function initials(name: string) {
 
 function title(role: string) {
   return role.charAt(0) + role.slice(1).toLowerCase();
+}
+
+/* ================================================================== razorpay */
+
+type RazorpaySuccess = {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+};
+
+type RazorpayOptions = {
+  key: string;
+  amount: number;
+  currency: string;
+  order_id: string;
+  name: string;
+  description: string;
+  prefill: { name: string; email: string; contact: string };
+  theme: { color: string };
+  handler: (response: RazorpaySuccess) => void;
+  modal: { ondismiss: () => void; confirm_close?: boolean };
+};
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayOptions) => {
+      open: () => void;
+      on: (event: "payment.failed", cb: (response: { error?: { description?: string } }) => void) => void;
+    };
+  }
+}
+
+/** Razorpay's checkout.js is only fetched when someone actually pays online. */
+function loadRazorpay(): Promise<boolean> {
+  if (window.Razorpay) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => resolve(Boolean(window.Razorpay));
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
 }

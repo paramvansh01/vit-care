@@ -317,11 +317,30 @@ CREATE TABLE pharmacy_order (
   address_id      INTEGER NOT NULL REFERENCES delivery_address(address_id),
   prescription_id INTEGER REFERENCES prescription(prescription_id),
   order_type      TEXT    NOT NULL CHECK (order_type IN ('OTC','RX')),
-  payment_mode    TEXT    NOT NULL DEFAULT 'COD' CHECK (payment_mode IN ('COD','UPI','CARD')),
+  payment_mode    TEXT    NOT NULL DEFAULT 'COD' CHECK (payment_mode IN ('COD','UPI','CARD','RAZORPAY')),
   status          TEXT    NOT NULL DEFAULT 'PLACED'
                     CHECK (status IN ('PLACED','PACKED','OUT_FOR_DELIVERY','DELIVERED','CANCELLED')),
   total_amount    REAL    NOT NULL DEFAULT 0,
   placed_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per online payment attempt through the gateway (Razorpay). The
+-- amount is fixed server-side when the attempt starts; the order row only
+-- exists once the gateway's signature has been verified.
+CREATE TABLE payment (
+  payment_id         INTEGER PRIMARY KEY,
+  reg_no             TEXT    NOT NULL REFERENCES student(reg_no) ON DELETE CASCADE,
+  gateway            TEXT    NOT NULL DEFAULT 'RAZORPAY' CHECK (gateway IN ('RAZORPAY')),
+  gateway_order_id   TEXT    NOT NULL UNIQUE,
+  gateway_payment_id TEXT    UNIQUE,
+  amount_paise       INTEGER NOT NULL CHECK (amount_paise >= 100),
+  currency           TEXT    NOT NULL DEFAULT 'INR',
+  status             TEXT    NOT NULL DEFAULT 'CREATED'
+                       CHECK (status IN ('CREATED','PAID','FAILED','REFUNDED')),
+  order_id           INTEGER UNIQUE REFERENCES pharmacy_order(order_id) ON DELETE SET NULL,
+  failure_reason     TEXT,
+  created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  paid_at            TEXT
 );
 
 CREATE TABLE order_item (
@@ -534,3 +553,4 @@ CREATE INDEX idx_signal_room         ON video_signal(room_code, signal_id);
 CREATE INDEX idx_session_user        ON app_session(user_id);
 CREATE INDEX idx_call_callee         ON call_session(callee_id, status);
 CREATE INDEX idx_call_caller         ON call_session(caller_id, status);
+CREATE INDEX idx_payment_student     ON payment(reg_no, status);

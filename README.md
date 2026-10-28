@@ -61,6 +61,24 @@ password is `vitcare`; students sign in with their registration number, doctors 
 - Audio and video go straight between the two browsers (WebRTC). Only the handshake passes
   through the server, as rows in `video_signal`; on one Wi-Fi no internet is needed.
 
+## Online payment (Razorpay)
+
+The pharmacy checkout offers **Cash on delivery** or **Pay online · Razorpay**. Put your keys in
+`.env.local` (copy `.env.example`; the file is git-ignored — never commit the secret):
+
+```
+RAZORPAY_KEY_ID=rzp_test_…
+RAZORPAY_KEY_SECRET=…
+```
+
+The server computes the amount from catalogue prices and opens a Razorpay order (recorded in the
+`payment` table as CREATED). After the student pays in Razorpay's window, the server verifies the
+HMAC signature with the secret, re-reads the payment from Razorpay, captures it if needed, and only
+then writes the `pharmacy_order` — in the same transaction that marks the payment PAID
+(`trg_payment_captured` logs it). If the cart changed meanwhile, the payment is refunded. Test-mode
+card: `5267 3181 8797 5449`, any future expiry, any CVV, any OTP. The laptop running the server
+needs internet for this step.
+
 **Two-laptop demo:** laptop A runs `npm run lan:prod` and signs up as a student. Laptop B opens
 the printed `https://…:3443` address, accepts the certificate, and signs up as a doctor. A books a
 video slot with B; B opens the booking → *Start consultation* → *Video call* → *Join call*; A's
